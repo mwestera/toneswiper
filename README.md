@@ -18,7 +18,7 @@ You can install ToneSwiper from the Python Package Index:
 pip install toneswiper
 ```
 
-Or use `pipx` to install it in its own virtual environment (see `pipx` [installation instructiond](https://pipx.pypa.io/latest/installation/)).
+Or use `pipx` to install it in its own virtual environment (see `pipx` [installation instructions](https://pipx.pypa.io/latest/installation/)).
 
 To install the latest version potentially in development, install directly from the git repository (with `pip` or `pipx`): 
 
