@@ -494,6 +494,11 @@ class ToneSwiperWindow(QMainWindow):
 
 
 def main():
+    """
+    Starts the PyQt6 app and main window, and calls upon various ui_helpers for intercepting tab/shift+tab,
+    mouse movements, mute some log messages, and sets up F1 for help window.
+    """
+
     args = ui_helpers.parse_args()
 
     app = QApplication(sys.argv)
