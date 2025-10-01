@@ -18,7 +18,7 @@ On the command-line, a typical usage would be to navigate to a folder with one o
 toneswiper *.wav
 ```
 
-This will start the gui app to let you annotate the selected sound files.
+This will start the gui app to let you annotate the selected sound files. It can be almost exclusively controlled by the keyboard; press `F1` to open a help window explaining the keyboard controls.
 
 If your folder also contains `.TextGrid` files (with names matching the `.wav` files), as exported from Praat, and/or you want to save your annotations to such files, you can do the following:
 
