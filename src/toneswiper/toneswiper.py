@@ -71,6 +71,24 @@ HELP_TEXT = ("<h2>Welcome to ToneSwiper!</h2>"
              "<li>Ctrl+Shift+Z: Remove all annotations of the current audio file; a blank slate!"
              "</ul>")
 
+
+key_str_to_todi = {
+    'LH': 'L*H',
+    'HL': 'H*L',
+    'HL>': 'H*L L%',
+    'LH>': 'L*H H%',
+    'LHL': 'L*HL',  # delay
+    'HLH': 'H*LH',  # only pre-nuclear
+    'H>': 'H%',
+    'L>': 'L%',
+    '<H': '%H',
+    '<L': '%L',
+    '>': '%',
+    'H': 'H*',
+    'L': 'L*',
+}
+
+
 def key_sequence_to_transcription(key_sequence):
     proto_transcription = ''
     for key in key_sequence:
@@ -137,7 +155,7 @@ def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple
             from_textgrids[wavfile] = []
             continue
         will_be_modified = True
-        transcription = [(p.time, p.text) for p in textgrid.get_tier_by_name(tier).points]
+        transcription = [(p.time * 1000, p.text) for p in textgrid.get_tier_by_name(tier).points]
         from_textgrids[wavfile] = transcription
     if will_be_modified:
         logging.warning(f'Loaded from existing textgrids; existing tier {tier} will be modified.')
@@ -153,27 +171,11 @@ def write_to_textgrids(transcriptions, paths, duration, tier):
                 textgrid.delete_tier(tier)
         else:
             textgrid = tgt.core.TextGrid(basename)
-        points = [tgt.core.Point(time, text) for time, text in transcription]
-        textgrid.add_tier(tgt.core.PointTier(start_time=0, end_time=duration,
+        points = [tgt.core.Point(time/1000, text) for time, text in transcription]
+        textgrid.add_tier(tgt.core.PointTier(start_time=0, end_time=duration/1000,
                                              name=tier, objects=points))
         tgt.write_to_file(textgrid, textgrid_path, format='long')
 
-
-key_str_to_todi = {
-    'LH': 'L*H',
-    'HL': 'H*L',
-    'HL>': 'H*L L%',
-    'LH>': 'L*H H%',
-    'LHL': 'L*HL',  # delay
-    'HLH': 'H*LH',  # only pre-nuclear
-    'H>': 'H%',
-    'L>': 'L%',
-    '<H': '%H',
-    '<L': '%L',
-    '>': '%',
-    'H': 'H*',
-    'L': 'L*',
-}
 
 class AudioPlayerWrapper(QMediaPlayer):
     SEEK_STEP_MS = 500
@@ -361,7 +363,7 @@ class ToneSwiperWindow(QMainWindow):
     def __init__(self, files: list[str], save_as_textgrids: str = None, save_as_json: str = None):
         super().__init__()
         self.wavfiles = files
-        self.current_file_index = 0
+        self.current_file_index = None
         self.save_as_textgrid_tier = save_as_textgrids
         self.save_as_json = save_as_json
 
@@ -382,6 +384,9 @@ class ToneSwiperWindow(QMainWindow):
 
         self.label = QLabel('', self)
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = QApplication.font()
+        font.setPointSize(14)
+        self.label.setFont(font)
         layout.addWidget(self.label)
 
         self.player = AudioPlayerWrapper()
@@ -392,26 +397,39 @@ class ToneSwiperWindow(QMainWindow):
         self.textboxes = TextBubbleSceneView(proportion_width=self.spectogram.width_for_plot)
         layout.addWidget(self.textboxes)
 
-        self.load_index(self.current_file_index)
+        self.first_file = True
+        self.load_index(0)
 
         self.keys_currently_pressed = set()
         self.current_key_sequence = []
         self.current_key_sequence_time = None
 
     def load_index(self, idx: int):
-        self.transcriptions[self.current_file_index] = [(b.relative_x, b.toPlainText()) for b in self.textboxes.textBubbles()]
-        for item in self.textboxes.textBubbles():
-            item.scene().removeItem(item)
+        if idx == self.current_file_index:
+            return
+
+        if not self.first_file:
+            self.transcriptions[self.current_file_index] = [(b.relative_x * self.player.duration(), b.toPlainText()) for b in self.textboxes.textBubbles()]
+            for item in self.textboxes.textBubbles():
+                item.scene().removeItem(item)
+        self.first_file = False
 
         self.current_file_index = idx % len(self.wavfiles)
         path = self.wavfiles[self.current_file_index]
-        self.label.setText(f"{path} ({self.current_file_index + 1}/{len(self.wavfiles)})")
+        self.label.setText(f"File {self.current_file_index + 1}/{len(self.wavfiles)}: {path}")
 
         self.spectogram.load_file(path)
+        self.player.stop()
         self.player.load_file(path)
+        self.player.durationChanged.connect(self.duration_known_so_load_transcription)
 
-        for time, text in self.transcriptions[self.current_file_index]:
-            self.textboxes.text_bubble_scene.new_item_relx(time, text)
+
+    def duration_known_so_load_transcription(self, duration):
+        if duration > 0:
+            for time, text in self.transcriptions[self.current_file_index]:
+                self.textboxes.text_bubble_scene.new_item_relx(time / self.player.duration(), text)
+        self.player.durationChanged.disconnect()
+
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Space:
@@ -493,7 +511,7 @@ class ToneSwiperWindow(QMainWindow):
             last_bubble.scene().removeItem(last_bubble)
 
     def closeEvent(self, event):
-        self.transcriptions[self.current_file_index] = [(b.relative_x, b.toPlainText()) for b in self.textboxes.textBubbles()]
+        self.transcriptions[self.current_file_index] = [(b.relative_x * self.player.duration(), b.toPlainText()) for b in self.textboxes.textBubbles()]
 
         self.player.stop()
 
