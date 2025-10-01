@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QContextMenuEvent, QPainter, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QPointF, QTimer, QEvent, QObject
 
-BASELINE_Y = -20
+BASELINE_Y = -40
 ROW_HEIGHT = 50
 ARROW_WIDTH = 10
 ARROW_HEIGHT = 3
@@ -199,7 +199,7 @@ class TextBubble(QGraphicsTextItem):
                     occupied.append((y, ox1, ox2))
 
             new_y = BASELINE_Y + ROW_HEIGHT
-            for offset in range(0, 5 * ROW_HEIGHT, ROW_HEIGHT):
+            for offset in range(0, 4 * ROW_HEIGHT, ROW_HEIGHT):
                 y_try = BASELINE_Y + offset
                 overlap = False
                 for oy, ox1, ox2 in occupied:
