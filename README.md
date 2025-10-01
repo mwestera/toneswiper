@@ -1,6 +1,6 @@
 # ToneSwiper
 
-![](toneswiper.png)
+![](https://github.com/mwestera/toneswiper/blob/master/toneswiper.png)
 
 ## Installation
 
