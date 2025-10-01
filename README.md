@@ -4,16 +4,26 @@
 
 ## Transcription of Dutch Intonation (ToDI)
 
-The [ToDI framework](https://todi.cls.ru.nl/) describes intonation in the Dutch language as a series of prosodic events, such as rising (L*H) and falling (H*L) pitch accents, and high (H%) and low (L%) boundaries. The ToneSwiper program facilitates manual transcription of intonation using this framework, by making it more efficient and more enjoyable. Specifically, it enables speedy transcription in real-time, in sync with the audio, through intuitive hotkey combinations.
+The [ToDI framework](https://todi.cls.ru.nl/) describes intonation in the Dutch language as a series of prosodic events, such as rising (`L*H`) and falling (`H*L`) pitch accents, and high (`H%`) and low (`L%`) boundaries. 
+
+ToneSwiper facilitates manual transcription of intonation using this framework, by making it more efficient and more enjoyable. Specifically, it enables speedy transcription in real-time, in sync with the audio, through intuitive hotkey combinations.
 
 Future versions of this program may support other ToDI/ToBI-like transcription frameworks, suitable for other languages.
 
 ## Installation
 
-Recommended way of installing as a globally available command, but with its own virtual environment, is as follows. If your system does not have `pipx` yet (for installing Python programs), you first need to install that, see [here](https://pipx.pypa.io/latest/installation/).
+You can install ToneSwiper from the Python Package Index:
 
 ```bash
-pipx install git+https://github.com/mwestera/toneswiper
+pip install toneswiper
+```
+
+Or use `pipx` to install it in its own virtual environment (see `pipx` [installation instructiond](https://pipx.pypa.io/latest/installation/)).
+
+To install the latest version potentially in development, install directly from the git repository (with `pip` or `pipx`): 
+
+```bash
+pip install git+https://github.com/mwestera/toneswiper
 ```
 
 ## Usage
