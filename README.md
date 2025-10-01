@@ -1,5 +1,7 @@
 # ToneSwiper
 
+![](toneswiper.png)
+
 ## Installation
 
 Recommended way of installing as a globally available command, but with its own virtual environment, is as follows. If your system does not have `pipx` yet (for installing Python programs), you first need to install that, see [here](https://pipx.pypa.io/latest/installation/).
@@ -15,6 +17,8 @@ On the command-line, a typical usage would be to navigate to a folder with one o
 ```bash
 toneswiper *.wav
 ```
+
+This will start the gui app to let you annotate the selected sound files.
 
 If your folder also contains `.TextGrid` files (with names matching the `.wav` files), as exported from Praat, and/or you want to save your annotations to such files, you can do the following:
 
