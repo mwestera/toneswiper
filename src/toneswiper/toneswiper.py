@@ -5,23 +5,25 @@ Keyboard controls: Space=play/pause, >/< = next/prev, ]/[ = seek 5s.
 """
 import sys
 import os
-import json
 import argparse
 import logging
 import functools
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler, QtMsgType
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QMessageBox
+from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtGui import QShortcut, QKeySequence, QFont
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 import parselmouth
-import tgt
+
 from .textbubbles import TextBubbleSceneView, TabInterceptor
+from . import resources
+from . import io
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
 
 todi_keys = {
     'high': Qt.Key.Key_Up,
@@ -30,47 +32,6 @@ todi_keys = {
     'right': Qt.Key.Key_Right,
     'downstep': Qt.Key.Key_Control,
 }
-
-HELP_TEXT = ("<h2>Welcome to ToneSwiper!</h2>"
-
-             "<h2>Command-line options</h2>"
-             "<ul>"
-             "<li>The command <code>toneswiper</code> plus one or more .wav files starts the application."
-             "<li>Do <code>toneswiper --help</code> for command-line options."
-             "<li>To <b>save</b> your annotations<b>, run it with <code>--json</code> or <code>--textgrid</code>."
-             "</ul>"
-             
-             "<h2>👂 ToDI commands</h2>"
-             "<p>"
-             "<b>⬅:</b> left boundary (combine with ⬆/⬇ for high/low boundary).<br>"
-             "<b>➡:</b> right boundary (combine with ⬆/⬇/neither for high/low/level boundary).<br>"
-             "<b>⬆:</b> high tone; renders H* if first tone in non-boundary sequence.<br>"
-             "<b>⬇:</b> low tone; renders L* if first tone in non-boundary sequence.<br>"
-             "<b>Control:</b> when combined with H*, results in downstep !H*."
-             "</p>"
-             
-             "<h2>📻 Navigation and audio commands</h2>"
-             "<ul>"
-             "<li>F1: Display this help"
-             "<li>Alt+F4: Quit (<b>will auto-save</b>)"
-             "<li>Alt+⬅/➡: Next/previous sound file (also brackets [, ])"
-             "<li>Home/End: Go to first/last sound file"
-             "<li>Space: Play/pause current sound file"
-             "<li>Angle brackets (&lt;, &gt;): Fastforward/backward 500ms"
-             "<li>➕/➖: increase/decrease playback speed (and pitch, for now 😼)"
-             "</ul>"
-
-             "<h2>⌨ Editing annotations (text bubbles)</h2>"
-             "<ul>"
-             "<li>Double-click in the annotation pane to add an annotation."
-             "<li>When editing an annotation, hit ENTER to stop editing."
-             "<li>Click and drag an annotation to move it."
-             "<li>When editing an annotation, hit shift+⬅/➡ to slightly move it horizontally."
-             "<li>Right-click an existing annotation to delete it."
-             "<li>Ctrl+Z: 'Undo', i.e., remove most recently added annotation (careful: no 'redo')."
-             "<li>Ctrl+Shift+Z: Remove all annotations of the current audio file; a blank slate!"
-             "</ul>")
-
 
 key_str_to_todi = {
     'LH': 'L*H',
@@ -111,70 +72,6 @@ def key_sequence_to_transcription(key_sequence):
         transcription = transcription.replace('H*', '!H*')
 
     return transcription
-
-
-def load_from_json(path):
-    """
-    Loads annotations from json.
-    """
-    logging.warning(f'Loading from existing file {path}; will be modified.')
-    with open(path, 'r') as file:
-        from_json = json.loads(file.read())
-    return from_json
-
-
-def write_to_json(wavfiles, transcriptions, to_file):
-    """
-    Write a dictionary mapping wav filenames to transcriptions (lists of pairs).
-    If to_file is None, prints to stdout.
-    """
-    for_json = {str(file): transcription for file, transcription in zip(wavfiles, transcriptions)}
-    if to_file is not None:
-        with open(to_file, 'w') as file:
-            file.write(json.dumps(for_json))
-    else:
-        print(json.dumps(for_json))
-
-
-def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple[float,str]]]:
-    """
-    For a series of .wav file paths, looks for corresponding .TextGrid files.
-    Loads annotations from the provided point tier if they exist.
-    Returns a dictionary from wav filenames to list of time-stamped annotations (float, str) pairs.
-    """
-    from_textgrids = {}
-    will_be_modified = False
-    for wavfile in wav_paths:
-        textgrid_path = wavfile.replace('.wav', '.TextGrid')
-        if not os.path.exists(textgrid_path):
-            from_textgrids[wavfile] = []
-            logging.warning(f'No textgrid found for {wavfile}')
-            continue
-        textgrid = tgt.io.read_textgrid(textgrid_path)
-        if not textgrid.has_tier(tier):
-            from_textgrids[wavfile] = []
-            continue
-        will_be_modified = True
-        transcription = [(p.time * 1000, p.text) for p in textgrid.get_tier_by_name(tier).points]
-        from_textgrids[wavfile] = transcription
-    if will_be_modified:
-        logging.warning(f'Loaded from existing textgrids; existing tier {tier} will be modified.')
-    return from_textgrids
-
-
-def write_to_textgrids(transcriptions, paths, duration, tier):
-    for textgrid_path, transcription in zip(paths, transcriptions):
-        basename = os.path.splitext(os.path.basename(textgrid_path))[0]
-        if os.path.exists(textgrid_path):
-            textgrid = tgt.io.read_textgrid(textgrid_path)
-            if textgrid.has_tier(tier):
-                textgrid.delete_tier(tier)
-        else:
-            textgrid = tgt.core.TextGrid(basename)
-        points = [tgt.core.Point(time/1000, text) for time, text in transcription]
-        textgrid.add_tier(tgt.core.PointTier(start_time=0, end_time=duration/1000,
-                                             name=tier, objects=points))
-        tgt.write_to_file(textgrid, textgrid_path, format='long')
 
 
 class AudioPlayerWrapper(QMediaPlayer):
@@ -370,14 +267,13 @@ class ToneSwiperWindow(QMainWindow):
         self.transcriptions = [[] for _ in self.wavfiles]
 
         if self.save_as_json and os.path.exists(self.save_as_json):
-            from_json = load_from_json(self.save_as_json)
+            from_json = io.load_from_json(self.save_as_json)
             self.transcriptions = [from_json.get(filename, []) for filename in self.wavfiles]
         if self.save_as_textgrid_tier:
-            from_textgrids = load_from_textgrids(self.wavfiles, self.save_as_textgrid_tier)
+            from_textgrids = io.load_from_textgrids(self.wavfiles, self.save_as_textgrid_tier)
             self.transcriptions = [from_textgrids.get(wavfile, []) for wavfile in self.wavfiles]
 
         self.setWindowTitle('ToneSwiper')
-
         central = QWidget()
         layout = QVBoxLayout(central)
         self.setCentralWidget(central)
@@ -516,12 +412,12 @@ class ToneSwiperWindow(QMainWindow):
         self.player.stop()
 
         if self.save_as_textgrid_tier:
-            write_to_textgrids(self.transcriptions,
+            io.write_to_textgrids(self.transcriptions,
                               [wavfile.replace('.wav', '.TextGrid') for wavfile in self.wavfiles],
                               self.player.duration(),
                               self.save_as_textgrid_tier)
         else:
-            write_to_json(self.wavfiles, self.transcriptions, to_file=self.save_as_json)
+            io.write_to_json(self.wavfiles, self.transcriptions, to_file=self.save_as_json)
 
         event.accept()  # or event.ignore() to cancel closing
 
@@ -543,19 +439,6 @@ class CursorMonitor(QObject):
             self.cursor_handler(global_pos)
 
         return super().eventFilter(obj, event)
-
-
-class HelpOverlay(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Window)
-        self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setWindowTitle("ToneSwiper help")
-        self.setFont(QFont("", 12))
-
-        layout = QVBoxLayout(self)
-        label = QLabel(HELP_TEXT)
-        label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(label)
 
 
 def custom_message_handler(msg_type, context, message):
@@ -586,19 +469,23 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle('fusion')
+    icon = resources.load_icon()
+
     qInstallMessageHandler(custom_message_handler)
 
     window = ToneSwiperWindow(args.files, save_as_textgrids=args.textgrid, save_as_json=args.json)
+    app.setWindowIcon(icon)
+    window.setWindowIcon(icon)
 
     tab_interceptor = TabInterceptor(window.textboxes.text_bubble_scene.handle_tabbing)
     app.installEventFilter(tab_interceptor)
     cursor_monitor = CursorMonitor(window.spectogram.update_cursor_line)
     app.installEventFilter(cursor_monitor)
 
-    help_box = HelpOverlay(window)
+    help_box = resources.HelpOverlay(window)
 
     def show_help():
-        help_box.show()  # starts in front
+        help_box.show()
         help_box.activateWindow()
         help_box.raise_()
 
