@@ -1,26 +1,32 @@
 import sys
 
-from PyQt6.QtWidgets import (
-    QApplication, QGraphicsView, QGraphicsScene,
-    QGraphicsTextItem
-)
-from PyQt6.QtGui import QContextMenuEvent, QPainter, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QPointF, QTimer, QEvent, QObject
+from PyQt6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, QGraphicsTextItem
+from PyQt6.QtGui import QContextMenuEvent, QPainter, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
 
-BASELINE_Y = -40
+from . import ui_helpers
+
+BASELINE_Y = -30
 ROW_HEIGHT = 50
 ARROW_WIDTH = 10
 ARROW_HEIGHT = 3
 
 
 class TextBubble(QGraphicsTextItem):
+    """
+    Defines an editable, movable text bubble.
+    Holds .relative_x position (managed by .updateRelativeX and .moveToRelativeX), and
+    .item_to_focus_next, a singleton list shared by all instances of TextBubble and their container,
+    affecting tab/shift-tab behavior.
+    """
+
     def __init__(self, text: str = "", item_to_focus_next: list = [None]):
         """
-        Defines an editable, movable text bubble.
-        Holds .relative_x position (managed by .updateRelativeX and .moveToRelativeX), and
-        .item_to_focus_next, a singleton list shared by all instances of TextBubble and their container,
-        affecting tab/shift-tab behavior.
+        Creates a TextBubble and customizes its looks a bit. The argument item_to_focus_next is intended
+        to be a singleton list shared by all instances of TextBubble and their container, used higher up to
+        customize tab/shift-tab behavior.
         """
+
         super().__init__(text)
 
         self.item_to_focus_next = item_to_focus_next
@@ -379,34 +385,21 @@ class TextBubbleSceneView(QGraphicsView):
     def textBubbles(self):
         return [item for item in self.scene().items() if isinstance(item, TextBubble)]
 
-
-class TabInterceptor(QObject):
-    """
-    Apparently tabs are handled by the main window, and passed down for certain default behaviors.
-    Overriding these will make tab/shift-tab more friendly.
-    """
-
-    def __init__(self, tab_handler):
+    def remove_all_bubbles(self):
         """
-        Tab_handler is any function taking only a boolean 'backward' as argument, to differentiate
-        between tab and shift-tab.
+        Clears all annotation bubbles.
+        """
+        for bubble in self.textBubbles():
+            bubble.scene().removeItem(bubble)
 
-        Specifically, this was meant to be used with TextBubbleScene.handleTabbing.
+    def remove_last_added_bubble(self):
         """
-        self.tab_handler = tab_handler
-        super().__init__()
-
-    def eventFilter(self, obj, event) -> bool:
+        Removes the last added bubble, which happens to be the first one in self.scene.items().
         """
-        Called for any event; in case of tab/shift-tab, applies the tab_handler;
-        otherwise returns False (meaning event is passed through)
-        """
-        if event.type() == QEvent.Type.KeyPress and event.key() in (
-            Qt.Key.Key_Tab, Qt.Key.Key_Backtab
-        ):
-            self.tab_handler(backward=event.key() == Qt.Key.Key_Backtab)
-            return True
-        return False
+        bubbles = self.textBubbles()
+        if bubbles:
+            last_bubble = bubbles.pop(0)
+            last_bubble.scene().removeItem(last_bubble)
 
 
 def main():
@@ -418,7 +411,7 @@ def main():
     view.resize(820, 220)
     view.show()
 
-    tab_filter = TabInterceptor(view.text_bubble_scene.handle_tabbing)
+    tab_filter = ui_helpers.TabInterceptor(view.text_bubble_scene.handle_tabbing)
     app.installEventFilter(tab_filter)
 
     sys.exit(app.exec())

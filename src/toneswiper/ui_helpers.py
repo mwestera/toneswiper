@@ -1,8 +1,14 @@
-from PyQt6.QtCore import Qt, QByteArray
+from PyQt6.QtCore import Qt, QByteArray, QObject, QEvent
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
 from PyQt6.QtGui import QIcon, QPixmap
 
+import argparse
+
 class HelpOverlay(QWidget):
+    """
+    A nonmodal, initially foregrounded window with help about the keyboard controls.
+    """
+
     text = ("<h2>Welcome to ToneSwiper!</h2>"
              "<h2>🖥 From the command-line</h2>"
              "<ul>"
@@ -47,7 +53,7 @@ class HelpOverlay(QWidget):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setWindowTitle("ToneSwiper help")
         font = QApplication.font()
-        font.setPointSize(14)
+        font.setPointSize(12)
         self.setFont(font)
 
         layout = QVBoxLayout(self)
@@ -55,8 +61,38 @@ class HelpOverlay(QWidget):
         label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(label)
 
+    def display_panel(self):
+        self.show()
+        self.activateWindow()
+        self.raise_()
 
-def load_icon():
+
+class Keys:
+    PAUSE = {Qt.Key.Key_Space}
+    FORWARD = {Qt.Key.Key_Greater, Qt.Key.Key_Period}
+    BACKWARD = {Qt.Key.Key_Less, Qt.Key.Key_Comma}
+    SLOWER = {Qt.Key.Key_Minus, Qt.Key.Key_Underscore}
+    FASTER = {Qt.Key.Key_Plus, Qt.Key.Key_Equal}
+    NEXT = {Qt.Key.Key_PageDown, Qt.Key.Key_BracketRight}
+    PREVIOUS = {Qt.Key.Key_PageUp, Qt.Key.Key_BracketLeft}
+    FIRST = {Qt.Key.Key_Home}
+    LAST = {Qt.Key.Key_End}
+
+    HIGH = {Qt.Key.Key_Up}
+    LOW = {Qt.Key.Key_Down}
+    LEFT = {Qt.Key.Key_Left}
+    RIGHT = {Qt.Key.Key_Right}
+    DOWNSTEP = {Qt.Key.Key_Control}
+
+    TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP
+
+
+def load_icon() -> QIcon:
+    """
+    Creates a QIcon() object with different resolutions, based on hex-encoded icons
+    that were pre-computed using the base64 module:
+    import base64; icon_base64 = base64.b64encode(open('icon.png', 'br').read()).decode("utf-8")
+    """
     icon_16 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAEuAAABLgF7cRpNAAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAAAfdJREFUOI2Vkz1vUgEUhp/7AYJA+EjbQLm0oNWqqZI2QaNCYpVFt9qxizG6OeliHLvUP+EkHUyMdjEmpg7GdCFRSWoKJgollFYHSoGWSy/cex3UarSS8s7nfXLOe84RnvEx2qSdMmi7TUyBA0hAMGWkmhXHjNxiN7VOYczAOIh3TyJSKEg4Jeronl9mi02mL+LF5rLua4rdPY5ysQ8AAx0D3SsDWB0W4jcnOHIhhCgJmIZJ8d0GS4/es7Op4jnq5PSNMIPnfLgUO8NXBliaXfnZCRA5G2QkMYQo/YhAEAXCsUGm5pK4/U60eptWVWPoUj+j1xWqX7b3upIBCuky7oCLb58qlDIbBE4NMHknxmGvneS98zy/v4jVKZN9UiIQ81HL7/wO9DHpUplV5e95fSE3Uw+TSBaR9Pwya5/XqRebuBQ7jbKK1ugQJLwm/i/lzVKNzEIWgPHpk9RXVbTtDpVcA63R+WMbXZRZyKHWWlhsMqOTkX1rugL0tkF2MQ/A2NURBPHfO+sKAFh5lcfQDVz9Do4lhnsHNKsqudcFAOK3xlGi/t4AAOn5ZSrFLeRDMtceJIjfnugNoKltXsy+ofThKwhw4nIEySoBIAtIWyKSYqB3hbQaGi/n3qJE/eiajqmBiFQVnpI7s8tOSkf39PLOIlLNhmPmO91xsArINKkeAAAAAElFTkSuQmCC"
     icon_32 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAJdAAACXQHBe+vTAAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAABF9JREFUWIW9l2tsk1UYx3/n7X3t2rEy3MVujDEYsAIKGmDouKlkKqgRSDQmhhgTF2LcBy8hxmBMcMGEaEi8xC9o5JI5YzAjAV3IBJTLCGjacRuXrWwrMFZGS9d269vjhwn4+hYZZt3/2/mf5z3PL+fkPOd9BIBEigbaaoE6gZwIwkBGJFWJ6FBg84vM+EIgpNiAVKbja5IYnooQUgaJZyb33zJjJZvcFKh7VuN9RjTQtk7CZ0EuKnEGMpr8lqzYKWBiSpBap0jkWxFCY5YcIE6UCCEFRJ2iQEmC2KgncRTamPduBWVPF6SdTxBDQKlRghGkLkAIQW6xC1ehA4CheJLgyV6SCXVEAE6Pjep6L/5vOzm/O5gmQiLBaPy3bXNamLWygqlLJmKxmzVzyYRK4HiQo9t9hK/c1C1pz7dic5u51hbWzVlcJhwFVvpORzS+BqDIO4En367CZNVxDQdbDEya/yDFD+dzZJuPtr3nNJtX+UoJizbN5EZHlF7fDQAKHhnHSy2LKKoaT/BoiO+q9mnWVP45mLum8q7JtSBGqtY+xOOvzwFxx++/GKXjlyvY861MfrYQAPc0J57qPMKBAS4fC+nXume2/1DF0kkMJVQObf0DgDONXZxp7CJrgoXXTi7H5h4+wt8/OsmBD9rSrqHZgWM7/QzGhgC43hVm35YjfLN2F1+vaaTpwxZ6L1zXLeCtKWfq4lKNt/iTWdjcZs791IOaSDG3bgo5ZY60AKIBv+ylmwjDZ2ayGnHkZdHfFUFK7e1QDAoL1s5m+hNlGn8oluSHd34mfCXKtDUeVuycR9+pMFvnNDP3zXKq671c2t/L9uqW299k4yKPIgyrqN0wQIRBEgCkkini4URaWiklgRNBnA84cJfk3PYNJoWcomzaDwSIXIphz7fS8p6PyKUBug/34fRkcWjjaW723Kk3FqzYcep3YCQymAy8UL+McR6nxt/z8UECJ9Ldeb1u7YBy71C91CGVX79s1R3Roy97NbdiJPpfAABX20O07+/UeLnFLopnpy+9ow4A0LrDj5pMabyZK6aOHUA0FOPcwYDGK5yRx/jScWMDAPDnrtO6t2zaskljB9DfHaHbf1XjTV5YPKKSPioAAKeaz2vGJpuRiiWld4nOAEBnaw+xG9riNWf1DBzurLEBUJMpfLvPajxzlonl6xdicZjv8tUoAgD4ms7S36392cj1uHhu41JN2c4YgJpM0fJ5K+qg9pfNle/g+fqlzH91NmabKXMAAFfb+2j+9DAypX9FvTXl1Lz/mK5UjyoAQOexHvZu+o3B6JBubkK5m+w8uxZAQPK+X5B7KHA8yI/rm7l85prGj0cGGei/1XkJBCRFA/72MNcnX2Nkz+h9SUDZAg/emimk1BRHt/luQ42nkGxyzorv8demEFuCdChxoqMPkUY27BRQIiWyVgx3xr4mMCwfm+bUhpMcCbJpFZUrBQy35420vSGhDmRpJttz4IKEzaup/Eog5F8535IHHNcKcQAAAABJRU5ErkJggg=="
     icon_48 = "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"
@@ -69,4 +105,82 @@ def load_icon():
         pixmap.loadFromData(ba)
         icon.addPixmap(pixmap)
     return icon
+
+
+class CursorMonitor(QObject):
+    """
+    When cursor moves, an instance of this class calls a given function (specified when creating it).
+    """
+
+    def __init__(self, cursor_handler):
+        """
+        cursor_handler is any function taking only a (global) position as argument.
+        """
+        self.cursor_handler = cursor_handler
+        super().__init__()
+
+    def eventFilter(self, obj, event) -> bool:
+        """
+        Monitors for mousemove events, and simply passes the global position into the cursor_handler.
+        """
+        if event.type() == QEvent.Type.MouseMove:
+            global_pos = event.globalPosition().toPoint()
+            self.cursor_handler(global_pos)
+
+        return super().eventFilter(obj, event)
+
+
+class TabInterceptor(QObject):
+    """
+    Apparently tabs are handled by the main window, and passed down for certain default behaviors.
+    Overriding these will make tab/shift-tab more friendly.
+    """
+
+    def __init__(self, tab_handler):
+        """
+        Tab_handler is any function taking only a boolean 'backward' as argument, to differentiate
+        between tab and shift-tab.
+
+        Specifically, this was meant to be used with TextBubbleScene.handleTabbing.
+        """
+        self.tab_handler = tab_handler
+        super().__init__()
+
+    def eventFilter(self, obj, event) -> bool:
+        """
+        Called for any event; in case of tab/shift-tab, applies the tab_handler;
+        otherwise returns False (meaning event is passed through)
+        """
+        if event.type() == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Tab, Qt.Key.Key_Backtab
+        ):
+            self.tab_handler(backward=event.key() == Qt.Key.Key_Backtab)
+            return True
+        return False
+
+def custom_message_handler(msg_type, context, message):
+    if "QFFmpeg::Demuxer::unnamed" in message:
+        return
+    if "QFFmpeg::StreamDecoder::unnamed" in message:
+        return
+    if "QFFmpeg::AudioRenderer::unnamed" in message:
+        return
+    if "Using Qt multimedia" in message:
+        return
+    print(message)
+
+
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('files', nargs='+', type=str, help='One or more .wav files')
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument('--textgrid', type=str, nargs='?', const='ToDI', default=None,
+                           help='Will save annotations to .TextGrid files corresponding in name to the original '
+                                '.wav files., to a tier with the specified name (default: "ToDI"). '
+                                'If such .TextGrid files already exist, will load annotations from the given tier '
+                                '(if it exists) and overwrite them.')
+    group.add_argument('--json', type=str, help='Will save annotations to the specified .json file; if file '
+                                                 'already exists, will also load from and overwrite it.',)
+
+    return ap.parse_args()
 
