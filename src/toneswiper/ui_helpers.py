@@ -23,7 +23,8 @@ class HelpOverlay(QWidget):
              "<li>➡:</b> right boundary (combine with ⬆/⬇/neither for high/low/level boundary)."
              "<li>⬆:</b> high tone; renders as H* if first tone in non-boundary sequence."
              "<li>⬇:</b> low tone; renders as L* if first tone in non-boundary sequence."
-             "<li><b>Control</b>:</b> when combined with H*, results in downstep !H*."
+             "<li><b>Control:</b> when combined with H*, results in downstep !H*."
+            "<li><b>(Back)slash (/, \\):</b> when combined with H*, makes vocative chant H*!H."
              "</ul>"
 
              "<h2>📻 Navigation and audio commands</h2>"
@@ -83,8 +84,9 @@ class Keys:
     LEFT = {Qt.Key.Key_Left}
     RIGHT = {Qt.Key.Key_Right}
     DOWNSTEP = {Qt.Key.Key_Control}
+    CHANT = {Qt.Key.Key_Backslash, Qt.Key.Key_Slash}
 
-    TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP
+    TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP | CHANT
 
 
 def load_icon() -> QIcon:

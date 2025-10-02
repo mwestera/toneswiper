@@ -19,17 +19,15 @@ from . import ui_helpers
 from . import io
 from .ui_helpers import Keys
 
-# TODO: Prevent repeats from holding a ToDI key too long.
 # TODO: Shift key to mark 'uncertain' annotations.
 # TODO: Enable delayed annotation.
-
 
 key_str_to_todi = {
     'LH': 'L*H',
     'HL': 'H*L',
     'HL>': 'H*L L%',
     'LH>': 'L*H H%',
-    'LHL': 'L*HL',  # delay
+    'LHL': 'L*HL',  # 'delay'
     'HLH': 'H*LH',  # only pre-nuclear
     'H>': 'H%',
     'L>': 'L%',
@@ -38,6 +36,7 @@ key_str_to_todi = {
     '>': '%',
     'H': 'H*',
     'L': 'L*',
+    'H\\': 'H*!H',  # vocative chaaaahaaant
 }
 
 
@@ -53,6 +52,9 @@ def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
             proto_transcription += 'H'
         elif key in Keys.LOW:
             proto_transcription += 'L'
+
+    if any(k in Keys.CHANT for k in key_sequence):
+        proto_transcription += '\\'
 
     if any(k in Keys.RIGHT for k in key_sequence):
         proto_transcription += '>'
@@ -77,7 +79,7 @@ class AudioPlayer(QMediaPlayer):
     (Because at least some audio back-ends update position only once every 50-100ms.)
     """
 
-    SEEK_STEP_MS = 500
+    SEEK_STEP_MS = 800
 
     def __init__(self):
         """
@@ -315,6 +317,19 @@ class AudioViewer(QWidget):
         ax.set_ylabel('Pitch (Hz)')
 
 
+class CurrentlyPressedKeysTracker(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pressed_keys = set()
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
+            self.pressed_keys.add(event.key())
+        elif event.type() == QEvent.Type.KeyRelease and not event.isAutoRepeat():
+            self.pressed_keys.discard(event.key())
+        return False  # don't block the event
+
+
 class ToneSwiperWindow(QMainWindow):
     """
     Main window of the app, wrapping an AudioPlayer, Audioviewer and TextBubbleSceneView.
@@ -331,6 +346,8 @@ class ToneSwiperWindow(QMainWindow):
         self.wavfiles = wavfiles
         self.save_as_textgrid_tier = save_as_textgrids
         self.save_as_json = save_as_json
+
+        self.currently_pressed_keys_tracker = CurrentlyPressedKeysTracker()
 
         self.transcriptions = [[] for _ in self.wavfiles]
         if self.save_as_json and os.path.exists(self.save_as_json):
@@ -363,9 +380,9 @@ class ToneSwiperWindow(QMainWindow):
 
         self.current_file_index = None
         self.load_sound_by_index(0)
+        self.transcription_loaded = False
 
         # For registering ToDI transcription key sequences
-        self.keys_currently_pressed = set()
         self.current_key_sequence = []
         self.current_key_sequence_time = None
 
@@ -375,13 +392,18 @@ class ToneSwiperWindow(QMainWindow):
         the requested sound file, and (re)loads the corresponding audioviewer (spectogram) and transcription
         panels (the latter only once the audio's duration is known).
         """
+        self.keys_currently_pressed = set()    # to serve as refresh, sometimes it gets stuck...
+
         if idx == self.current_file_index:
             return
 
         if self.current_file_index is not None:  # i.e., if it's not first file, first save the current annotations
-            self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration(), b.toPlainText()) for b in self.transcription_panel.textBubbles()]
-            for item in self.transcription_panel.textBubbles():
-                item.scene().removeItem(item)
+            if self.transcription_loaded:
+                self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration(), b.toPlainText()) for b in self.transcription_panel.textBubbles()]
+                for item in self.transcription_panel.textBubbles():
+                    item.scene().removeItem(item)
+
+        self.transcription_loaded = False
 
         self.current_file_index = idx % len(self.wavfiles)
         path = self.wavfiles[self.current_file_index]
@@ -402,14 +424,17 @@ class ToneSwiperWindow(QMainWindow):
             for time, text in self.transcriptions[self.current_file_index]:
                 self.transcription_panel.text_bubble_scene.new_item_relx(time / self.audioplayer.duration(), text)
         self.audioplayer.durationChanged.disconnect()
+        self.transcription_loaded = True
 
     def keyPressEvent(self, event):
         """
         Handles most keyboard inputs, as defined in the Keys class, for controlling the audioplayer and
         for making the annotations.
         """
+        if event.isAutoRepeat():
+            return
+
         key = event.key()
-        self.keys_currently_pressed.add(key)
 
         if key in Keys.PAUSE:
             self.audioplayer.toggle_play_pause()
@@ -451,10 +476,10 @@ class ToneSwiperWindow(QMainWindow):
         Key sequences are built up until no more keys are currently pressed. Then they are released and
         turned into a transcription, which if feasible results in a new text bubble in the transcription panel.
         """
-        key = event.key()
-        self.keys_currently_pressed.discard(key)
+        if event.isAutoRepeat():
+            return
 
-        if self.keys_currently_pressed:  # Sequence not yet completed
+        if self.currently_pressed_keys_tracker.pressed_keys:  # Sequence not yet completed
             return
 
         if self.current_key_sequence and self.current_key_sequence_time:
