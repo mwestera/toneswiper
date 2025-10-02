@@ -20,6 +20,8 @@ from . import io
 from .ui_helpers import Keys
 
 # TODO: Prevent repeats from holding a ToDI key too long.
+# TODO: Shift key to mark 'uncertain' annotations.
+# TODO: Enable delayed annotation.
 
 
 key_str_to_todi = {
@@ -200,7 +202,12 @@ class AudioViewer(QWidget):
         uses matplotlib to create the corresponding overlaid plots, and initiates two vertical lines:
         progress bar and cursor x-position bar.
         """
+
         self.fig.clear()
+
+        # TODO: Cache the actual background, not only the data.
+        # self.background = self.cached_backgrounds.get(path)
+
         self.ax = self.fig.add_subplot(111)
         pitch, spec, xmin, xmax = self.make_spectogram_cached(path)
         self.duration = xmax
