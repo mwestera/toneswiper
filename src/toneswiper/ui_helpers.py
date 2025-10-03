@@ -32,10 +32,11 @@ class HelpOverlay(QWidget):
              "<ul>"
              "<li>F1: Display this help"
              "<li>Alt+F4: Quit (<b>will auto-save</b>)"
-             "<li>Alt+⬅/➡: Next/previous sound file (also brackets [, ])"
+             "<li>PageUp/PageDown (also Alt+⬅/➡): Next/previous sound file"
              "<li>Home/End: Go to first/last sound file"
              "<li>Space: Play/pause current sound file"
-             "<li>Angle brackets (&lt;, &gt;): Fastforward/backward 500ms"
+             "<li>Angle brackets (&gt; &lt;): Fastforward/backward 500ms"
+             "<li>Square brackets (], [): decrease/increase delay between audio and annotation timing."
              "<li>Plus/minus (+, -): increase/decrease playback speed (and pitch, for now 😼)"
              "</ul>"
 
@@ -77,6 +78,8 @@ class Keys:
     FASTER = {Qt.Key.Key_Plus, Qt.Key.Key_Equal}
     NEXT = {Qt.Key.Key_PageDown, Qt.Key.Key_BracketRight}
     PREVIOUS = {Qt.Key.Key_PageUp, Qt.Key.Key_BracketLeft}
+    MOREDELAY = {Qt.Key.Key_BracketLeft}
+    LESSDELAY = {Qt.Key.Key_BracketRight}
     FIRST = {Qt.Key.Key_Home}
     LAST = {Qt.Key.Key_End}
 
@@ -89,6 +92,59 @@ class Keys:
     UNCERTAIN = {Qt.Key.Key_Shift}
 
     TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP | CHANT | UNCERTAIN
+
+
+key_str_to_todi = {
+    'LH': 'L*H',
+    'HL': 'H*L',
+    'HL>': 'H*L L%',
+    'LH>': 'L*H H%',
+    'LHL': 'L*HL',  # 'delay'
+    'HLH': 'H*LH',  # only pre-nuclear
+    'H>': 'H%',
+    'L>': 'L%',
+    '<H': '%H',
+    '<L': '%L',
+    '>': '%',
+    'H': 'H*',
+    'L': 'L*',
+    'H\\': 'H*!H',  # vocative chaaaahaaant
+}
+
+
+def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
+    """
+    Turns a list of PyQt keys first into a standardized 'proto-transcription', which is then via a dictionary
+    mapped into a real ToDI transcription.
+    Can raise a ValueError (caught higher up) if the key sequence does not define a ToDi sequence.
+    """
+    proto_transcription = ''
+    for key in key_sequence:
+        if key in Keys.HIGH:
+            proto_transcription += 'H'
+        elif key in Keys.LOW:
+            proto_transcription += 'L'
+
+    if any(k in Keys.CHANT for k in key_sequence):
+        proto_transcription += '\\'
+
+    if any(k in Keys.RIGHT for k in key_sequence):
+        proto_transcription += '>'
+    if any(k in Keys.LEFT for k in key_sequence):
+        proto_transcription = '<' + proto_transcription
+
+    try:
+        transcription = key_str_to_todi[proto_transcription]
+    except KeyError as e:
+        raise ValueError(f'Not a valid key sequence: {proto_transcription}')
+
+    if any(k in Keys.DOWNSTEP for k in key_sequence):
+        transcription = transcription.replace('H*', '!H*')
+
+    if any(k in Keys.UNCERTAIN for k in key_sequence):
+        transcription += '?'
+
+    return transcription
 
 
 def load_icon() -> QIcon:

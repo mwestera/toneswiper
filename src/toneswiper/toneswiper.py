@@ -18,75 +18,31 @@ from .textbubbles import TextBubbleSceneView
 from . import ui_helpers
 from . import io
 from .ui_helpers import Keys
-
-# TODO: Enable delayed annotation.
-
-key_str_to_todi = {
-    'LH': 'L*H',
-    'HL': 'H*L',
-    'HL>': 'H*L L%',
-    'LH>': 'L*H H%',
-    'LHL': 'L*HL',  # 'delay'
-    'HLH': 'H*LH',  # only pre-nuclear
-    'H>': 'H%',
-    'L>': 'L%',
-    '<H': '%H',
-    '<L': '%L',
-    '>': '%',
-    'H': 'H*',
-    'L': 'L*',
-    'H\\': 'H*!H',  # vocative chaaaahaaant
-}
+from collections import deque
 
 
-def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
-    """
-    Turns a list of PyQt keys first into a standardized 'proto-transcription', which is then via a dictionary
-    mapped into a real ToDI transcription.
-    Can raise a ValueError (caught higher up) if the key sequence does not define a ToDi sequence.
-    """
-    proto_transcription = ''
-    for key in key_sequence:
-        if key in Keys.HIGH:
-            proto_transcription += 'H'
-        elif key in Keys.LOW:
-            proto_transcription += 'L'
-
-    if any(k in Keys.CHANT for k in key_sequence):
-        proto_transcription += '\\'
-
-    if any(k in Keys.RIGHT for k in key_sequence):
-        proto_transcription += '>'
-    if any(k in Keys.LEFT for k in key_sequence):
-        proto_transcription = '<' + proto_transcription
-
-    try:
-        transcription = key_str_to_todi[proto_transcription]
-    except KeyError as e:
-        raise ValueError(f'Not a valid key sequence: {proto_transcription}')
-
-    if any(k in Keys.DOWNSTEP for k in key_sequence):
-        transcription = transcription.replace('H*', '!H*')
-
-    if any(k in Keys.UNCERTAIN for k in key_sequence):
-        transcription += '?'
-
-    return transcription
-
+# TODO: Progress bar not correctly shown first 100-or-so ms.
 
 class AudioPlayer(QMediaPlayer):
     """
-    Wraps QMediaPlayer, mainly to facilitate displaying a more smoothly moving
-    progress bar, by virtue of storing self.last_position and self.time_of_last_position.
-    (Because at least some audio back-ends update position only once every 50-100ms.)
+    Wraps QMediaPlayer, mainly to facilitate displaying a more smoothly moving progress bar (because at least
+    some audio back-ends may update position only once every 50-100ms), by virtue of self.estimate_current_position,
+    as well as a delayed progress bar, by virtue of self.get_delayed_position
     """
 
-    SEEK_STEP_MS = 800
+    DELAY_MS = 500
+    DELAY_REFRESH_PERIOD_MS = 10
 
-    def __init__(self):
+    # UI things
+    SEEK_STEP_MS = 800
+    DELAY_DELTA_MS = 100  # increment size when adjusting delay
+
+    def __init__(self, getposition_interval_ms=None):
         """
         Instantiates the audio player, connects it to the audio output, and sets up
         bookkeeping attributes for estimation of current position.
+
+        If getposition_interval_ms is specified, will sync the queue with calls to estimate_current_position.
         """
         super().__init__()
         self.audio_output = QAudioOutput()  # apparently needed
@@ -99,13 +55,33 @@ class AudioPlayer(QMediaPlayer):
         self.time_of_last_position = 0
         self.positionChanged.connect(self.on_position_changed)
 
+        # Queue to store previous positions.
+        self.sync_queue_with_getposition = getposition_interval_ms is not None
+        if self.sync_queue_with_getposition:
+            self.DELAY_REFRESH_PERIOD_MS = getposition_interval_ms
+        self.position_queue_maxlength = self.DELAY_MS // self.DELAY_REFRESH_PERIOD_MS
+        self.position_queue: deque[int] = deque()
+
+        if not self.sync_queue_with_getposition:  # set up its own timer
+            self.queue_refresh_timer = QTimer(self)
+            self.queue_refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
+            self.queue_refresh_timer.setInterval(self.DELAY_REFRESH_PERIOD_MS)
+            self.queue_refresh_timer.timeout.connect(self.update_position_queue)
+            self.queue_refresh_timer.start()
+
+        self.update_position = False  # only set to True once position has been updated for the first time
+
     def load_file(self, path: str, autoplay=True) -> None:
         """
         Loads a file and (by default) starts playing.
         """
         self.setSource(QUrl.fromLocalFile(path))
+        self.position_queue.clear()
         if autoplay:
             QTimer.singleShot(150, self.play)
+            self.position_queue.appendleft(0)
+            self.last_position = None
+            self.update_position = False
 
     def toggle_play_pause(self) -> None:
         """
@@ -123,13 +99,20 @@ class AudioPlayer(QMediaPlayer):
         """
         newpos = min(max(0, self.position() + delta_ms), self.duration())
         self.setPosition(newpos)
+        self.position_queue.clear()
+        self.position_queue.appendleft(newpos)
         self.last_position = None  # in order for estimate_current_position to start afresh
 
-    def estimate_current_position(self) -> None:
+    def estimate_current_position(self) -> int:
         """
         Estimates current position from last position and time_of_last_position.
         (Because at least some audio back-ends update position only once every 50-100ms.)
         """
+        if not self.update_position:
+            if self.sync_queue_with_getposition:
+                self.update_position_queue(0)
+            return 0
+
         if self.last_position is None:  # e.g., at the start or if position was recently changed by seeking
             self.on_position_changed(self.position())
         if self.playbackState() == self.PlaybackState.PlayingState and self.time_of_last_position is not None:
@@ -137,7 +120,26 @@ class AudioPlayer(QMediaPlayer):
         else:
             delta = 0
         estimated_position = self.last_position + delta
+
+        if self.sync_queue_with_getposition:
+            self.update_position_queue(estimated_position)
+
         return estimated_position
+
+    def get_delayed_position(self) -> int | None:
+        """
+
+        """
+        if self.position_queue and self.DELAY_MS != 0:
+            return self.position_queue[-1]
+        else:
+            return None
+
+    def update_position_queue(self, pos=None):
+
+        while len(self.position_queue) >= self.position_queue_maxlength:
+            self.position_queue.pop()
+        self.position_queue.appendleft(pos if pos is not None else self.estimate_current_position())
 
     def on_position_changed(self, ms: float) -> None:
         """
@@ -145,6 +147,11 @@ class AudioPlayer(QMediaPlayer):
         """
         self.last_position = ms
         self.time_of_last_position = self.elapsedtimer.elapsed()
+        self.update_position = True  # now it's at least somewhat accurate
+
+    def change_delay(self, delta: int):
+        self.DELAY_MS = max(self.DELAY_MS + delta, 0)
+        self.position_queue_maxlength = max(self.DELAY_MS // self.DELAY_REFRESH_PERIOD_MS, 1)
 
 
 class AudioViewer(QWidget):
@@ -155,6 +162,7 @@ class AudioViewer(QWidget):
     """
 
     FRAMERATE = 60  # fps
+    REFRESH_PERIOD = 1000 // FRAMERATE
 
     def __init__(self, player: AudioPlayer, parent=None, width_for_plot: float = 1.0):
         """
@@ -170,22 +178,22 @@ class AudioViewer(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.canvas)
 
-        self.ax = self.fig.add_subplot(111)
+        # To be instantiated once first audio file is loaded
+        self.ax = None
         self.ax2 = None
         self.progress_line = None
+        self.progress_line_delayed = None
         self.cursor_line = None
-        self.duration = 0.0
+        self.duration = None
         self.background = None
+        self.last_drawn_position = None
+        self.last_drawn_position_delayed = None
 
         self.player = player
 
-        # Bookkeeping to avoid jitter due to imprecise audioplayer position;
-        # will not update in case of small steps backwards.
-        self.last_drawn_position = 0
-
         self.update_timer = QTimer(self)
         self.update_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.update_timer.setInterval(1000 // self.FRAMERATE)
+        self.update_timer.setInterval(self.REFRESH_PERIOD)
         self.update_timer.timeout.connect(self.update_progress)
         self.update_timer.start()
 
@@ -225,56 +233,74 @@ class AudioViewer(QWidget):
         self.ax.set_position(rectangle)
         self.ax2.set_position(rectangle)
 
-        self.progress_line = self.ax.axvline(0, color=(0.4, 0.4, 1.0), alpha=.8, linewidth=2, animated=True)
+        self.progress_line = self.ax.axvline(0, color=(0.4, 0.4, 1.0), linewidth=2, animated=True)
+        self.progress_line_delayed = self.ax.axvline(0, color=(0.7, 0.7, 1.0), linewidth=1, animated=True)
         self.cursor_line = self.ax.axvline(x=0, color="white", alpha=.6, linewidth=1)
         self.canvas.draw()
+
+        self.last_drawn_position = None
+        self.last_drawn_position_delayed = None
+
 
     def update_progress(self) -> None:
         """
         Called by a timer with FRAMERATE, to update the moving progress bar, with some jitter avoidance.
         """
-        if self.player.duration() > 0:
+        if self.player.duration():
             pos = self.player.estimate_current_position()
-            # avoiding jitter:
-            if self.last_drawn_position is not None and self.last_drawn_position - 100 < pos < self.last_drawn_position:
-                return
             fraction = pos / self.player.duration()
-            self.set_progress(fraction)
-            self.last_drawn_position = pos
 
-    def set_progress(self, fraction: float) -> None:
+            if (pos_delayed := self.player.get_delayed_position()) is not None:
+                fraction_delayed = pos_delayed / self.player.duration()
+            else:
+                fraction_delayed = None
+
+            self.set_progress(fraction, fraction_delayed)
+
+    def set_progress(self, fraction: float, fraction_delayed: float = None) -> None:
         """
         Redraws the spectogram plot with the vertical progress bar at the given fraction of the x-axis,
-        using blitting for efficiency. Called by update_progress.
+        using blitting for efficiency. Called by update_progress. If fraction_delayed is provided, a secondary
+        line will be drawn.
         """
         if self.background is None or self.progress_line is None:
             return
+
         x = fraction * self.duration
+        if self.last_drawn_position is not None and (self.last_drawn_position - .1) < x < self.last_drawn_position:
+            x = self.last_drawn_position  # avoid jitter:
+
         self.progress_line.set_xdata([x])
-        self.canvas.restore_region(self.background)
-        self.ax.draw_artist(self.progress_line)
+        self.last_drawn_position = x
+
+        if fraction_delayed is not None:
+            x_delayed = fraction_delayed * self.duration
+            if self.last_drawn_position_delayed is not None and (self.last_drawn_position_delayed - .1) < x_delayed < self.last_drawn_position_delayed:
+                x_delayed = self.last_drawn_position_delayed  # avoid jitter:
+            self.progress_line_delayed.set_xdata([x_delayed])
+            self.last_drawn_position_delayed = x_delayed
+
         if self.cursor_line is not None:
             self.ax.draw_artist(self.cursor_line)
+
+        self.canvas.restore_region(self.background)
+        self.ax.draw_artist(self.cursor_line)
+        self.ax.draw_artist(self.progress_line)
+        if fraction_delayed is not None:
+            self.ax.draw_artist(self.progress_line_delayed)
         self.canvas.blit(self.ax.bbox)
         QApplication.processEvents()
 
     def update_cursor_line(self, global_pos: QPointF) -> None:
         """
-        Updates the cursor line in the plot; intended for real-time tracking, using blitting for efficiency.
-        Gets a global position, to be called from outside the class (in this case a global CursorMonitor instance).
+        Updates the cursor line for the plot. Gets a global position, to be called from outside the class
+        (in this case a global CursorMonitor instance). Redraw not actually done here; only in set_progress.
         """
         if self.background is None or self.cursor_line is None:
             return
         local_pos = self.canvas.mapFromGlobal(global_pos)
         xdata, _ = self.ax.transData.inverted().transform((local_pos.x(), local_pos.y()))
         self.cursor_line.set_xdata([xdata])
-        self.canvas.restore_region(self.background)
-        self.ax.draw_artist(self.cursor_line)
-        if self.progress_line is not None:
-            self.ax.draw_artist(self.progress_line)
-        self.canvas.blit(self.ax.bbox)
-        QApplication.processEvents()
-
 
     @staticmethod
     @functools.cache
@@ -374,7 +400,7 @@ class ToneSwiperWindow(QMainWindow):
         self.label.setFont(font)
         layout.addWidget(self.label)
 
-        self.audioplayer = AudioPlayer()
+        self.audioplayer = AudioPlayer()  # getposition_interval_ms=AudioViewer.REFRESH_PERIOD
         self.audioviewer = AudioViewer(self.audioplayer, self, width_for_plot=0.8)
         layout.addWidget(self.audioviewer)
         self.transcription_panel = TextBubbleSceneView(proportion_width=self.audioviewer.width_for_plot)
@@ -445,6 +471,10 @@ class ToneSwiperWindow(QMainWindow):
             self.audioplayer.seek_relative(self.audioplayer.SEEK_STEP_MS)
         elif key in Keys.BACKWARD:
             self.audioplayer.seek_relative(-self.audioplayer.SEEK_STEP_MS)
+        elif key in Keys.MOREDELAY:
+            self.audioplayer.change_delay(self.audioplayer.DELAY_DELTA_MS)
+        elif key in Keys.LESSDELAY:
+            self.audioplayer.change_delay(-self.audioplayer.DELAY_DELTA_MS)
         elif key in Keys.SLOWER:
             self.audioplayer.setPlaybackRate(max(self.audioplayer.playbackRate() - 0.1, 0.5))
         elif key in Keys.FASTER:
@@ -466,7 +496,7 @@ class ToneSwiperWindow(QMainWindow):
         elif key in Keys.TODI_KEYS:
             self.current_key_sequence.append(key)
             if key not in Keys.DOWNSTEP:
-                self.current_key_sequence_time = self.audioplayer.position()
+                self.current_key_sequence_time = self.audioplayer.get_delayed_position()
         else:
             self.current_key_sequence = []
             self.current_key_sequence_time = None
@@ -486,7 +516,7 @@ class ToneSwiperWindow(QMainWindow):
 
         if self.current_key_sequence and self.current_key_sequence_time:
             try:
-                transcription = key_sequence_to_transcription(self.current_key_sequence)
+                transcription = ui_helpers.key_sequence_to_transcription(self.current_key_sequence)
             except ValueError as e:
                 logging.warning(e)
             else:
