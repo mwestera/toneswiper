@@ -25,6 +25,7 @@ class HelpOverlay(QWidget):
              "<li>⬇:</b> low tone; renders as L* if first tone in non-boundary sequence."
              "<li><b>Control:</b> when combined with H*, results in downstep !H*."
             "<li><b>(Back)slash (/, \\):</b> when combined with H*, makes vocative chant H*!H."
+            "<li><b>Shift:</b> marks the current transcription as uncertain by appending '?'." 
              "</ul>"
 
              "<h2>📻 Navigation and audio commands</h2>"
@@ -85,8 +86,9 @@ class Keys:
     RIGHT = {Qt.Key.Key_Right}
     DOWNSTEP = {Qt.Key.Key_Control}
     CHANT = {Qt.Key.Key_Backslash, Qt.Key.Key_Slash}
+    UNCERTAIN = {Qt.Key.Key_Shift}
 
-    TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP | CHANT
+    TODI_KEYS = HIGH | LOW | LEFT | RIGHT | DOWNSTEP | CHANT | UNCERTAIN
 
 
 def load_icon() -> QIcon:

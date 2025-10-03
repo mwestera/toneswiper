@@ -19,7 +19,6 @@ from . import ui_helpers
 from . import io
 from .ui_helpers import Keys
 
-# TODO: Shift key to mark 'uncertain' annotations.
 # TODO: Enable delayed annotation.
 
 key_str_to_todi = {
@@ -68,6 +67,9 @@ def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
 
     if any(k in Keys.DOWNSTEP for k in key_sequence):
         transcription = transcription.replace('H*', '!H*')
+
+    if any(k in Keys.UNCERTAIN for k in key_sequence):
+        transcription += '?'
 
     return transcription
 
