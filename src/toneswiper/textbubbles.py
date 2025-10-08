@@ -6,7 +6,7 @@ from PyQt6.QtGui import QContextMenuEvent, QPainter, QFont, QKeyEvent, QTextCurs
 
 from . import ui_helpers
 
-BASELINE_Y = -30
+BASELINE_Y = 200
 ROW_HEIGHT = 50
 ARROW_WIDTH = 10
 ARROW_HEIGHT = 3
@@ -247,7 +247,6 @@ class TextBubbleScene(QGraphicsScene):
 
     def __init__(self):
         super().__init__()
-
         self.item_to_focus_next = [None]
 
     def mouseDoubleClickEvent(self, event):
@@ -296,17 +295,6 @@ class TextBubbleScene(QGraphicsScene):
         else:
             event.ignore()
 
-    def resizeEventFromView(self, width: float) -> None:
-        """
-        Resizes in a way that maintains Relative X positions of TextBubble objects.
-        Intended to be called from the containing QGraphicsView.
-        """
-        r = self.sceneRect()
-        self.setSceneRect(0, 0, width, r.height())
-        for it in self.items():
-            if isinstance(it, TextBubble):
-                it.moveToRelativeX()
-
     def handle_tabbing(self, backward: bool = False) -> None:
         """
         Meant to overwrite default tab/shift-tab behavior for setting focus to TextBubble objects,
@@ -347,75 +335,3 @@ class TextBubbleScene(QGraphicsScene):
                 current_focus_idx = len(all_textboxes) - 1
 
         all_textboxes[current_focus_idx].setFocus()
-
-
-class TextBubbleSceneView(QGraphicsView):
-    """
-    Completing the PyQt graphics hierarchy of a view, a scene, and the text bubbles it contains.
-    Handles resizeEvent (passed on to scene.resizrEventFromView), and keypresses to the containing
-    TextBubble objects (when focused).
-    """
-
-    def __init__(self, proportion_width: float = 1.0):
-        """
-        Sets a new TextBubbleScene as its viewed scene; sets its width to a specified
-        proportion of the view.
-        """
-        self.proportion_width = proportion_width
-        self.text_bubble_scene = TextBubbleScene()
-        super().__init__(self.text_bubble_scene)
-        self.calibrate_actual_width()
-        self.scene().setSceneRect(0, 0, self.actual_width, 100)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.calibrate_actual_width()
-        self.scene().resizeEventFromView(self.actual_width)
-
-    def calibrate_actual_width(self):
-        self.actual_width = self.proportion_width * self.viewport().width()
-
-    def keyPressEvent(self, event: QKeyEvent):
-        if any(item.hasFocus() for item in self.scene().items()):
-            super().keyPressEvent(event)
-        else:
-            event.ignore()
-
-    def textBubbles(self):
-        return [item for item in self.scene().items() if isinstance(item, TextBubble)]
-
-    def remove_all_bubbles(self):
-        """
-        Clears all annotation bubbles.
-        """
-        for bubble in self.textBubbles():
-            bubble.scene().removeItem(bubble)
-
-    def remove_last_added_bubble(self):
-        """
-        Removes the last added bubble, which happens to be the first one in self.scene.items().
-        """
-        bubbles = self.textBubbles()
-        if bubbles:
-            last_bubble = bubbles.pop(0)
-            last_bubble.scene().removeItem(last_bubble)
-
-
-def main():
-
-    app = QApplication(sys.argv)
-
-    view = TextBubbleSceneView()
-    view.setWindowTitle("Textboxes")
-    view.resize(820, 220)
-    view.show()
-
-    tab_filter = ui_helpers.TabInterceptor(view.text_bubble_scene.handle_tabbing)
-    app.installEventFilter(tab_filter)
-
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

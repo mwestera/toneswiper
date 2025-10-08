@@ -33,7 +33,7 @@ class HelpOverlay(QWidget):
              "<li>F1: Display this help"
              "<li>Alt+F4: Quit (<b>will auto-save</b>)"
              "<li>PageUp/PageDown (also Alt+⬅/➡): Next/previous sound file"
-             "<li>Home/End: Go to first/last sound file"
+             "<li>Home/End: Go to start/end of current sound file"
              "<li>Space: Play/pause current sound file"
              "<li>Angle brackets (&gt; &lt;): Fastforward/backward 500ms"
              "<li>Square brackets (], [): decrease/increase delay between audio and annotation timing."
@@ -48,7 +48,7 @@ class HelpOverlay(QWidget):
              "<li>When editing an annotation, hit shift+⬅/➡ to slightly move it horizontally."
              "<li>Right-click an existing annotation to delete it."
              "<li>Ctrl+Z: 'Undo', i.e., remove most recently added annotation (careful: no 'redo')."
-             "<li>Ctrl+Shift+Z: Remove all annotations of the current audio file; a blank slate!"
+             "<li>Ctrl+X: Remove all annotations of the current audio file; a blank slate!"
              "</ul>")
 
     def __init__(self, parent=None):
@@ -80,8 +80,8 @@ class Keys:
     PREVIOUS = {Qt.Key.Key_PageUp, Qt.Key.Key_BracketLeft}
     MOREDELAY = {Qt.Key.Key_BracketLeft}
     LESSDELAY = {Qt.Key.Key_BracketRight}
-    FIRST = {Qt.Key.Key_Home}
-    LAST = {Qt.Key.Key_End}
+    HOME = {Qt.Key.Key_Home}
+    END = {Qt.Key.Key_End}
 
     HIGH = {Qt.Key.Key_Up}
     LOW = {Qt.Key.Key_Down}

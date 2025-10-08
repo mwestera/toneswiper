@@ -1,24 +1,18 @@
 import sys
 import os
 import logging
-import functools
 
 from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler, QPointF
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsPixmapItem, QGraphicsLineItem
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QImage, QPixmap, QPen, QColor
 
-import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-
-import parselmouth
-
-from .textbubbles import TextBubbleSceneView
+from .textbubbles import TextBubbleScene, TextBubble
 from . import ui_helpers
 from . import io
 from .ui_helpers import Keys
-from collections import deque
+
+from . import spectogram
 
 
 # TODO: Progress bar not correctly shown first 100-or-so ms.
@@ -30,14 +24,14 @@ class AudioPlayer(QMediaPlayer):
     as well as a delayed progress bar, by virtue of self.get_delayed_position
     """
 
-    DELAY_MS = 500
-    DELAY_REFRESH_PERIOD_MS = 10
-
     # UI things
     SEEK_STEP_MS = 800
-    DELAY_DELTA_MS = 100  # increment size when adjusting delay
+    DELAY_DELTA_MS = 200
 
-    def __init__(self, getposition_interval_ms=None):
+    DELAY_MS = 600
+    DELAY_REFRESH_PERIOD_MS = 3
+
+    def __init__(self):
         """
         Instantiates the audio player, connects it to the audio output, and sets up
         bookkeeping attributes for estimation of current position.
@@ -55,33 +49,36 @@ class AudioPlayer(QMediaPlayer):
         self.time_of_last_position = 0
         self.positionChanged.connect(self.on_position_changed)
 
-        # Queue to store previous positions.
-        self.sync_queue_with_getposition = getposition_interval_ms is not None
-        if self.sync_queue_with_getposition:
-            self.DELAY_REFRESH_PERIOD_MS = getposition_interval_ms
-        self.position_queue_maxlength = self.DELAY_MS // self.DELAY_REFRESH_PERIOD_MS
-        self.position_queue: deque[int] = deque()
-
-        if not self.sync_queue_with_getposition:  # set up its own timer
-            self.queue_refresh_timer = QTimer(self)
-            self.queue_refresh_timer.setTimerType(Qt.TimerType.PreciseTimer)
-            self.queue_refresh_timer.setInterval(self.DELAY_REFRESH_PERIOD_MS)
-            self.queue_refresh_timer.timeout.connect(self.update_position_queue)
-            self.queue_refresh_timer.start()
-
         self.update_position = False  # only set to True once position has been updated for the first time
+
+        self.actual_delay = self.DELAY_MS
+        self.delay_countdown = QTimer(self)
+        self.delay_countdown.setTimerType(Qt.TimerType.PreciseTimer)
+        self.delay_countdown.setInterval(self.DELAY_REFRESH_PERIOD_MS)
+        self.delay_countdown.timeout.connect(self.monitor_delay)
+        self.delay_countdown.start()
 
     def load_file(self, path: str, autoplay=True) -> None:
         """
         Loads a file and (by default) starts playing.
         """
         self.setSource(QUrl.fromLocalFile(path))
-        self.position_queue.clear()
         if autoplay:
             QTimer.singleShot(150, self.play)
-            self.position_queue.appendleft(0)
             self.last_position = None
             self.update_position = False
+
+    def monitor_delay(self):
+        if self.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
+            self.actual_delay = max(0, self.actual_delay - self.DELAY_REFRESH_PERIOD_MS)
+        else:
+            self.actual_delay = self.DELAY_MS
+
+    def decrease_delay(self):
+        self.DELAY_MS = max(0, self.DELAY_MS - self.DELAY_DELTA_MS)
+
+    def increase_delay(self):
+        self.DELAY_MS = min(self.DELAY_MS + self.DELAY_DELTA_MS, self.duration())
 
     def toggle_play_pause(self) -> None:
         """
@@ -93,14 +90,26 @@ class AudioPlayer(QMediaPlayer):
             self.time_of_last_position = None
             self.play()
 
+    def skipforward(self):
+        self.seek_relative(self.SEEK_STEP_MS)
+
+    def skipbackward(self):
+        self.seek_relative(-self.SEEK_STEP_MS)
+
+    def skiphome(self):
+        self.setPosition(0)
+        self.last_position = None
+
+    def skipend(self):
+        self.setPosition(self.duration())
+        self.last_position = None
+
     def seek_relative(self, delta_ms: int) -> None:
         """
         Skips sound player ahead by delta_ms (or back, if negative), capped between 0 and duration.
         """
         newpos = min(max(0, self.position() + delta_ms), self.duration())
         self.setPosition(newpos)
-        self.position_queue.clear()
-        self.position_queue.appendleft(newpos)
         self.last_position = None  # in order for estimate_current_position to start afresh
 
     def estimate_current_position(self) -> int:
@@ -109,8 +118,6 @@ class AudioPlayer(QMediaPlayer):
         (Because at least some audio back-ends update position only once every 50-100ms.)
         """
         if not self.update_position:
-            if self.sync_queue_with_getposition:
-                self.update_position_queue(0)
             return 0
 
         if self.last_position is None:  # e.g., at the start or if position was recently changed by seeking
@@ -121,25 +128,10 @@ class AudioPlayer(QMediaPlayer):
             delta = 0
         estimated_position = self.last_position + delta
 
-        if self.sync_queue_with_getposition:
-            self.update_position_queue(estimated_position)
-
         return estimated_position
 
-    def get_delayed_position(self) -> int | None:
-        """
-
-        """
-        if self.position_queue and self.DELAY_MS != 0:
-            return self.position_queue[-1]
-        else:
-            return None
-
-    def update_position_queue(self, pos=None):
-
-        while len(self.position_queue) >= self.position_queue_maxlength:
-            self.position_queue.pop()
-        self.position_queue.appendleft(pos if pos is not None else self.estimate_current_position())
+    def get_delay(self):
+        return self.actual_delay
 
     def on_position_changed(self, ms: float) -> None:
         """
@@ -149,200 +141,106 @@ class AudioPlayer(QMediaPlayer):
         self.time_of_last_position = self.elapsedtimer.elapsed()
         self.update_position = True  # now it's at least somewhat accurate
 
-    def change_delay(self, delta: int):
-        self.DELAY_MS = max(self.DELAY_MS + delta, 0)
-        self.position_queue_maxlength = max(self.DELAY_MS // self.DELAY_REFRESH_PERIOD_MS, 1)
 
-
-class AudioViewer(QWidget):
+class TranscriptionPanel(QGraphicsView):
     """
-    Panel showing a Praat spectogram of the current sound, with a pitch track overlaid,
-    a moving progress bar depending on the audioplayer position, and a moving bar corresponding
-    to the cursor's x position in the window.
+    Completing the PyQt graphics hierarchy of a view, a scene, and the text bubbles it contains.
+    Handles resizeEvent (passed on to scene.resizeEventFromView), and keypresses to the containing
+    TextBubble objects (when focused).
     """
 
-    FRAMERATE = 60  # fps
-    REFRESH_PERIOD = 1000 // FRAMERATE
+    PX_PER_S = 200  # TODO Make zoomable?
 
-    def __init__(self, player: AudioPlayer, parent=None, width_for_plot: float = 1.0):
+    def __init__(self, position_getter, delay_getter):
         """
-        The audioplayer matters for displaying a moving progress bar based on the audioplayer's (estimated) position.
-        Width_for_plot [0,1] matters because it will affect the width of the textbubbles panel.
-        Parent is passed into super().
+        Sets a new TextBubbleScene as its viewed scene; sets its width to a specified
+        proportion of the view.
         """
-        super().__init__(parent)
-        self.fig = Figure(figsize=(8,3))
-        self.width_for_plot = width_for_plot
+        self.text_bubble_scene = TextBubbleScene()
+        super().__init__(self.text_bubble_scene)
+        self.setViewportMargins(30, 10, 30, 10)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        self.canvas = FigureCanvas(self.fig)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.canvas)
+        self.spectogram = None  # created upon load_file
+        self.delay_ms = delay_getter()
 
-        # To be instantiated once first audio file is loaded
-        self.ax = None
-        self.ax2 = None
-        self.progress_line = None
-        self.progress_line_delayed = None
-        self.cursor_line = None
-        self.duration = None
-        self.background = None
-        self.last_drawn_position = None
-        self.last_drawn_position_delayed = None
+        self.progress_line = QGraphicsLineItem()
+        self.progress_line.setPen(QPen(QColor(255, 255, 255, 150), 3))
+        self.scene().addItem(self.progress_line)
 
-        self.player = player
+        self.transcription_line = QGraphicsLineItem()
+        self.transcription_line.setPen(QPen(QColor(100, 255, 255, 150), 3))
+        self.scene().addItem(self.transcription_line)
 
-        self.update_timer = QTimer(self)
-        self.update_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.update_timer.setInterval(self.REFRESH_PERIOD)
-        self.update_timer.timeout.connect(self.update_progress)
-        self.update_timer.start()
+        self.cursor_line = QGraphicsLineItem()
+        self.cursor_line.setPen(QPen(QColor(255, 255, 0, 150), 3))
+        self.scene().addItem(self.cursor_line)
 
-        # For caching the plot background for more efficient drawing (blitting):
-        self.canvas.mpl_connect('draw_event', self._on_draw)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_progress_line)
+        self.timer.start(30)  # update ~33 FPS
 
-    def _on_draw(self, event) -> None:
+        self.position_getter = lambda: int(position_getter() * self.PX_PER_S / 1000)
+        self.delay_getter = lambda: int(delay_getter() * self.PX_PER_S / 1000)
+
+    def load_file(self, path, duration):
+        width_px = int(duration * (self.PX_PER_S / 1000))
+        self.scene().setSceneRect(0, 0, width_px, 400)
+        self.scene().removeItem(self.spectogram)
+        self.spectogram = spectogram.make_image_cached(path, width_px, 200)
+        self.spectogram.setPos(0, 0)
+        self.scene().addItem(self.spectogram)
+        self.progress_line.setZValue(1)
+        self.transcription_line.setZValue(1)
+        self.cursor_line.setZValue(2)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if any(item.hasFocus() for item in self.scene().items()):
+            super().keyPressEvent(event)
+        else:
+            event.ignore()
+
+    def textBubbles(self):
+        return [item for item in self.scene().items() if isinstance(item, TextBubble)]
+
+    def remove_all_bubbles(self):
         """
-        Handler for the 'draw_event' to recache the background.
-        Will run on the first draw and any subsequent window resizes.
+        Clears all annotation bubbles.
         """
-        if self.canvas.get_renderer():
-            self.background = self.canvas.copy_from_bbox(self.ax.bbox)
+        for bubble in self.textBubbles():
+            bubble.scene().removeItem(bubble)
 
-    def load_file(self, path: str) -> None:
+    def remove_last_added_bubble(self):
         """
-        Loads an audio file, processes it with praat (parselmouth) to extract spectogram and pitch,
-        uses matplotlib to create the corresponding overlaid plots, and initiates two vertical lines:
-        progress bar and cursor x-position bar.
+        Removes the last added bubble, which happens to be the first one in self.scene.items().
         """
-
-        self.fig.clear()
-
-        # TODO: Cache the actual background, not only the data.
-        # self.background = self.cached_backgrounds.get(path)
-
-        self.ax = self.fig.add_subplot(111)
-        pitch, spec, xmin, xmax = self.make_spectogram_cached(path)
-        self.duration = xmax
-
-        self.draw_spectrogram(spec, ax=self.ax)
-        self.ax2 = self.ax.twinx()
-        self.draw_pitch(pitch, ax=self.ax2)
-        self.ax.set_xlim(xmin, xmax)
-
-        rectangle = ((1.0-self.width_for_plot)/2, 0.1, self.width_for_plot, 0.8)
-        self.ax.set_position(rectangle)
-        self.ax2.set_position(rectangle)
-
-        self.progress_line = self.ax.axvline(0, color=(0.4, 0.4, 1.0), linewidth=2, animated=True)
-        self.progress_line_delayed = self.ax.axvline(0, color=(0.7, 0.7, 1.0), linewidth=1, animated=True)
-        self.cursor_line = self.ax.axvline(x=0, color="white", alpha=.6, linewidth=1)
-        self.canvas.draw()
-
-        self.last_drawn_position = None
-        self.last_drawn_position_delayed = None
-
-
-    def update_progress(self) -> None:
-        """
-        Called by a timer with FRAMERATE, to update the moving progress bar, with some jitter avoidance.
-        """
-        if self.player.duration():
-            pos = self.player.estimate_current_position()
-            fraction = pos / self.player.duration()
-
-            if (pos_delayed := self.player.get_delayed_position()) is not None:
-                fraction_delayed = pos_delayed / self.player.duration()
-            else:
-                fraction_delayed = None
-
-            self.set_progress(fraction, fraction_delayed)
-
-    def set_progress(self, fraction: float, fraction_delayed: float = None) -> None:
-        """
-        Redraws the spectogram plot with the vertical progress bar at the given fraction of the x-axis,
-        using blitting for efficiency. Called by update_progress. If fraction_delayed is provided, a secondary
-        line will be drawn.
-        """
-        if self.background is None or self.progress_line is None:
-            return
-
-        x = fraction * self.duration
-        if self.last_drawn_position is not None and (self.last_drawn_position - .1) < x < self.last_drawn_position:
-            x = self.last_drawn_position  # avoid jitter:
-
-        self.progress_line.set_xdata([x])
-        self.last_drawn_position = x
-
-        if fraction_delayed is not None:
-            x_delayed = fraction_delayed * self.duration
-            if self.last_drawn_position_delayed is not None and (self.last_drawn_position_delayed - .1) < x_delayed < self.last_drawn_position_delayed:
-                x_delayed = self.last_drawn_position_delayed  # avoid jitter:
-            self.progress_line_delayed.set_xdata([x_delayed])
-            self.last_drawn_position_delayed = x_delayed
-
-        if self.cursor_line is not None:
-            self.ax.draw_artist(self.cursor_line)
-
-        self.canvas.restore_region(self.background)
-        self.ax.draw_artist(self.cursor_line)
-        self.ax.draw_artist(self.progress_line)
-        if fraction_delayed is not None:
-            self.ax.draw_artist(self.progress_line_delayed)
-        self.canvas.blit(self.ax.bbox)
-        QApplication.processEvents()
+        bubbles = self.textBubbles()
+        if bubbles:
+            last_bubble = bubbles.pop(0)
+            last_bubble.scene().removeItem(last_bubble)
 
     def update_cursor_line(self, global_pos: QPointF) -> None:
         """
         Updates the cursor line for the plot. Gets a global position, to be called from outside the class
         (in this case a global CursorMonitor instance). Redraw not actually done here; only in set_progress.
         """
-        if self.background is None or self.cursor_line is None:
+        local_pos = self.mapFromGlobal(global_pos)
+        rect = self.spectogram.boundingRect()
+        x = local_pos.x() - self.mapFromScene(self.sceneRect().left(), 0).x() - 30  # TODO avoid magic number for padding.
+        self.cursor_line.setLine(x, rect.top(), x, rect.bottom())
+
+    def update_progress_line(self):
+        if not self.spectogram:
             return
-        local_pos = self.canvas.mapFromGlobal(global_pos)
-        xdata, _ = self.ax.transData.inverted().transform((local_pos.x(), local_pos.y()))
-        self.cursor_line.set_xdata([xdata])
 
-    @staticmethod
-    @functools.cache
-    def make_spectogram_cached(path):
-        """
-        Wrapper around parselmouth spectogram and pitch extraction, to be able to
-        cache it (per .wav file path).
-        """
-        snd = parselmouth.Sound(str(path))
-        pitch = snd.to_pitch(None)
-        pre = snd.copy()
-        pre.pre_emphasize()
-        spec = pre.to_spectrogram(window_length=0.03, maximum_frequency=8000)
-        return pitch, spec, snd.xmin, snd.xmax
+        position = self.position_getter()
+        rect = self.spectogram.boundingRect()
+        x = rect.left() + position
+        self.progress_line.setLine(x, rect.top(), x, rect.bottom())
 
-    @staticmethod
-    def draw_spectrogram(spec, ax, dynamic_range=70):
-        """
-        From parselmouth spectogram to a matplotlib plot.
-        """
-        data = 10 * np.log10(np.maximum(spec.values, 1e-10))
-        vmax = data.max()
-        vmin = vmax - dynamic_range
-
-        X, Y = spec.x_grid(), spec.y_grid()
-        sg_db = 10 * np.log10(spec.values)
-        ax.pcolormesh(X, Y, sg_db, vmin=sg_db.max() - dynamic_range, cmap='afmhot')
-        ax.axis(ymin=spec.ymin, ymax=spec.ymax)
-
-        ax.imshow(data, origin='lower', aspect='auto', cmap='gray', extent=[spec.xmin, spec.xmax, 0, spec.ymax], vmin=vmin, vmax=vmax)
-        ax.set_ylabel('Frequency (Hz)')
-
-    @staticmethod
-    def draw_pitch(pitch, ax):
-        """
-        From parselmouth pitch track to a matplotlib plot.
-        """
-        pitch_values = pitch.selected_array['frequency']
-        pitch_values[pitch_values==0] = np.nan
-        times = pitch.xs()
-        ax.plot(times, pitch_values, color='cyan')
-        ax.set_ylabel('Pitch (Hz)')
+        delayed_x = max(0, x - self.delay_getter())
+        self.transcription_line.setLine(delayed_x, rect.top(), delayed_x, rect.bottom())
+        self.centerOn(x, 0)
 
 
 class CurrentlyPressedKeysTracker(QObject):
@@ -401,9 +299,9 @@ class ToneSwiperWindow(QMainWindow):
         layout.addWidget(self.label)
 
         self.audioplayer = AudioPlayer()  # getposition_interval_ms=AudioViewer.REFRESH_PERIOD
-        self.audioviewer = AudioViewer(self.audioplayer, self, width_for_plot=0.8)
-        layout.addWidget(self.audioviewer)
-        self.transcription_panel = TextBubbleSceneView(proportion_width=self.audioviewer.width_for_plot)
+
+        self.transcription_panel = TranscriptionPanel(self.audioplayer.estimate_current_position, self.audioplayer.get_delay)
+        # AudioViewer(self.audioplayer, self, width_for_plot=0.8)
         layout.addWidget(self.transcription_panel)
 
         self.current_file_index = None
@@ -413,6 +311,7 @@ class ToneSwiperWindow(QMainWindow):
         # For registering ToDI transcription key sequences
         self.current_key_sequence = []
         self.current_key_sequence_time = None
+
 
     def load_sound_by_index(self, idx: int) -> None:
         """
@@ -437,7 +336,6 @@ class ToneSwiperWindow(QMainWindow):
         path = self.wavfiles[self.current_file_index]
         self.label.setText(f"File {self.current_file_index + 1}/{len(self.wavfiles)}: {path}")
 
-        self.audioviewer.load_file(path)
         self.audioplayer.stop()
         self.audioplayer.load_file(path)
         # Audioplayer may take a while to know the duration, which in turn affects the placement of annotations:
@@ -451,6 +349,7 @@ class ToneSwiperWindow(QMainWindow):
         if duration > 0:
             for time, text in self.transcriptions[self.current_file_index]:
                 self.transcription_panel.text_bubble_scene.new_item_relx(time / self.audioplayer.duration(), text)
+            self.transcription_panel.load_file(self.wavfiles[self.current_file_index], duration=duration)
         self.audioplayer.durationChanged.disconnect()
         self.transcription_loaded = True
 
@@ -468,13 +367,13 @@ class ToneSwiperWindow(QMainWindow):
             self.audioplayer.toggle_play_pause()
             return
         elif key in Keys.FORWARD:
-            self.audioplayer.seek_relative(self.audioplayer.SEEK_STEP_MS)
+            self.audioplayer.skipforward()
         elif key in Keys.BACKWARD:
-            self.audioplayer.seek_relative(-self.audioplayer.SEEK_STEP_MS)
+            self.audioplayer.skipbackward()
         elif key in Keys.MOREDELAY:
-            self.audioplayer.change_delay(self.audioplayer.DELAY_DELTA_MS)
+            self.audioplayer.increase_delay()
         elif key in Keys.LESSDELAY:
-            self.audioplayer.change_delay(-self.audioplayer.DELAY_DELTA_MS)
+            self.audioplayer.decrease_delay()
         elif key in Keys.SLOWER:
             self.audioplayer.setPlaybackRate(max(self.audioplayer.playbackRate() - 0.1, 0.5))
         elif key in Keys.FASTER:
@@ -483,20 +382,19 @@ class ToneSwiperWindow(QMainWindow):
             self.next()
         elif key in Keys.PREVIOUS or (key == Qt.Key.Key_Left and event.modifiers() & Qt.KeyboardModifier.AltModifier):
             self.prev()
-        elif key in Keys.FIRST:
-            self.load_sound_by_index(0)
-        elif key in Keys.LAST:
-            self.load_sound_by_index(len(self.wavfiles) - 1)
+        elif key in Keys.HOME:
+            self.audioplayer.skiphome()
+        elif key in Keys.END:
+            self.audioplayer.skipend()
 
         if key == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                self.transcription_panel.remove_all_bubbles()
-            else:
-                self.transcription_panel.remove_last_added_bubble()
+            self.transcription_panel.remove_last_added_bubble()
+        elif key == Qt.Key.Key_X and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.transcription_panel.remove_all_bubbles()
         elif key in Keys.TODI_KEYS:
             self.current_key_sequence.append(key)
             if key not in Keys.DOWNSTEP:
-                self.current_key_sequence_time = self.audioplayer.get_delayed_position()
+                self.current_key_sequence_time = self.audioplayer.estimate_current_position() - self.audioplayer.get_delay()
         else:
             self.current_key_sequence = []
             self.current_key_sequence_time = None
@@ -577,7 +475,7 @@ def main():
 
     tab_interceptor = ui_helpers.TabInterceptor(window.transcription_panel.text_bubble_scene.handle_tabbing)
     app.installEventFilter(tab_interceptor)
-    cursor_monitor = ui_helpers.CursorMonitor(window.audioviewer.update_cursor_line)
+    cursor_monitor = ui_helpers.CursorMonitor(window.transcription_panel.update_cursor_line)
     app.installEventFilter(cursor_monitor)
 
     help_box = ui_helpers.HelpOverlay(window)
