@@ -167,29 +167,6 @@ def load_icon() -> QIcon:
     return icon
 
 
-class CursorMonitor(QObject):
-    """
-    When cursor moves, an instance of this class calls a given function (specified when creating it).
-    """
-
-    def __init__(self, cursor_handler):
-        """
-        cursor_handler is any function taking only a (global) position as argument.
-        """
-        self.cursor_handler = cursor_handler
-        super().__init__()
-
-    def eventFilter(self, obj, event) -> bool:
-        """
-        Monitors for mousemove events, and simply passes the global position into the cursor_handler.
-        """
-        if event.type() == QEvent.Type.MouseMove:
-            global_pos = event.globalPosition().toPoint()
-            self.cursor_handler(global_pos)
-
-        return super().eventFilter(obj, event)
-
-
 class TabInterceptor(QObject):
     """
     Apparently tabs are handled by the main window, and passed down for certain default behaviors.

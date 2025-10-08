@@ -3,9 +3,9 @@ import os
 import logging
 
 from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler, QPointF
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsPixmapItem, QGraphicsLineItem
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QImage, QPixmap, QPen, QColor
+from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QPen, QColor, QCursor
 
 from .textbubbles import TextBubbleScene, TextBubble
 from . import ui_helpers
@@ -150,15 +150,16 @@ class TranscriptionPanel(QGraphicsView):
     """
 
     PX_PER_S = 200  # TODO Make zoomable?
+    PADDING = 30  # TODO Not quite what I need...
 
-    def __init__(self, position_getter, delay_getter):
+    def __init__(self, position_getter, delay_getter, position_setter):
         """
         Sets a new TextBubbleScene as its viewed scene; sets its width to a specified
         proportion of the view.
         """
         self.text_bubble_scene = TextBubbleScene()
         super().__init__(self.text_bubble_scene)
-        self.setViewportMargins(30, 10, 30, 10)
+        self.setViewportMargins(self.PADDING, 10, self.PADDING, 10)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         self.spectogram = None  # created upon load_file
@@ -173,15 +174,21 @@ class TranscriptionPanel(QGraphicsView):
         self.scene().addItem(self.transcription_line)
 
         self.cursor_line = QGraphicsLineItem()
-        self.cursor_line.setPen(QPen(QColor(255, 255, 0, 150), 3))
+        self.cursor_line.setPen(QPen(QColor(255, 255, 0, 150), 1))
         self.scene().addItem(self.cursor_line)
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_progress_line)
         self.timer.start(30)  # update ~33 FPS
 
-        self.position_getter = lambda: int(position_getter() * self.PX_PER_S / 1000)
-        self.delay_getter = lambda: int(delay_getter() * self.PX_PER_S / 1000)
+        self.position_getter = lambda: self.pos_to_pix(position_getter())
+        self.delay_getter = lambda: self.pos_to_pix(delay_getter())
+        self.position_setter = lambda x: position_setter(self.pix_to_pos(x))
+
+        self._programmatic_scroll = False
+        # self.horizontalScrollBar().valueChanged.disconnect()
+        # self.horizontalScrollBar().valueChanged.connect(self.on_scroll)
+        # self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def load_file(self, path, duration):
         width_px = int(duration * (self.PX_PER_S / 1000))
@@ -193,6 +200,25 @@ class TranscriptionPanel(QGraphicsView):
         self.progress_line.setZValue(1)
         self.transcription_line.setZValue(1)
         self.cursor_line.setZValue(2)
+
+    def centerOn(self, pos):
+        if self._programmatic_scroll:
+            super().centerOn(pos)
+        else:
+            self.position_setter(pos)
+
+    def scrollContentsBy(self, dx, dy):
+        if self._programmatic_scroll:
+            super().scrollContentsBy(dx, dy)
+        else:
+            x = self.position_getter() + -dx
+            self.position_setter(x)
+
+    def wheelEvent(self, event):
+        # if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        delta = event.angleDelta().y()
+        self.scrollContentsBy(delta, 0)
+        event.accept()
 
     def keyPressEvent(self, event: QKeyEvent):
         if any(item.hasFocus() for item in self.scene().items()):
@@ -219,16 +245,6 @@ class TranscriptionPanel(QGraphicsView):
             last_bubble = bubbles.pop(0)
             last_bubble.scene().removeItem(last_bubble)
 
-    def update_cursor_line(self, global_pos: QPointF) -> None:
-        """
-        Updates the cursor line for the plot. Gets a global position, to be called from outside the class
-        (in this case a global CursorMonitor instance). Redraw not actually done here; only in set_progress.
-        """
-        local_pos = self.mapFromGlobal(global_pos)
-        rect = self.spectogram.boundingRect()
-        x = local_pos.x() - self.mapFromScene(self.sceneRect().left(), 0).x() - 30  # TODO avoid magic number for padding.
-        self.cursor_line.setLine(x, rect.top(), x, rect.bottom())
-
     def update_progress_line(self):
         if not self.spectogram:
             return
@@ -240,8 +256,28 @@ class TranscriptionPanel(QGraphicsView):
 
         delayed_x = max(0, x - self.delay_getter())
         self.transcription_line.setLine(delayed_x, rect.top(), delayed_x, rect.bottom())
-        self.centerOn(x, 0)
 
+        self._programmatic_scroll = True
+        self.centerOn(QPointF(x, 0))
+        self._programmatic_scroll = False
+
+        global_cursor_pos = QCursor.pos()
+        local_cursor_pos = self.mapFromGlobal(global_cursor_pos)
+        cursor_x = local_cursor_pos.x() - self.mapFromScene(self.sceneRect().left(), 0).x() - self.PADDING
+        self.cursor_line.setLine(cursor_x, rect.top(), cursor_x, rect.bottom())
+
+
+    def pos_to_pix(self, pos_ms):
+        pix_per_ms = self.PX_PER_S / 1000
+        return int(pos_ms * pix_per_ms)
+
+    def pix_to_pos(self, pix):
+        pix_per_ms = self.PX_PER_S / 1000
+        return int(pix / pix_per_ms)
+
+    def left_edge_to_center(self, x):
+        x_center = x + int(self.viewport().width() / 2)
+        return x_center
 
 class CurrentlyPressedKeysTracker(QObject):
     def __init__(self, parent=None):
@@ -300,7 +336,9 @@ class ToneSwiperWindow(QMainWindow):
 
         self.audioplayer = AudioPlayer()  # getposition_interval_ms=AudioViewer.REFRESH_PERIOD
 
-        self.transcription_panel = TranscriptionPanel(self.audioplayer.estimate_current_position, self.audioplayer.get_delay)
+        self.transcription_panel = TranscriptionPanel(self.audioplayer.estimate_current_position,
+                                                      self.audioplayer.get_delay,
+                                                      self.audioplayer.setPosition)
         # AudioViewer(self.audioplayer, self, width_for_plot=0.8)
         layout.addWidget(self.transcription_panel)
 
@@ -475,8 +513,6 @@ def main():
 
     tab_interceptor = ui_helpers.TabInterceptor(window.transcription_panel.text_bubble_scene.handle_tabbing)
     app.installEventFilter(tab_interceptor)
-    cursor_monitor = ui_helpers.CursorMonitor(window.transcription_panel.update_cursor_line)
-    app.installEventFilter(cursor_monitor)
 
     help_box = ui_helpers.HelpOverlay(window)
     QShortcut(QKeySequence("F1"), window, activated=help_box.display_panel)
