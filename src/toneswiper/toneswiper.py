@@ -3,7 +3,7 @@ import os
 import logging
 
 from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler, QPointF
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem, QMessageBox
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QPen, QColor, QCursor
 
@@ -16,6 +16,7 @@ from . import spectogram
 
 
 # TODO: Progress bar not correctly shown first 100-or-so ms.
+# TODO: Update docstrings.
 
 class AudioPlayer(QMediaPlayer):
     """
@@ -26,10 +27,10 @@ class AudioPlayer(QMediaPlayer):
 
     # UI things
     SEEK_STEP_MS = 800
-    DELAY_DELTA_MS = 200
+    GHOST_DELAY_DELTA_MS = 200
 
-    DELAY_MS = 600
-    DELAY_REFRESH_PERIOD_MS = 3
+    GHOST_DELAY_MS = 600
+    GHOST_COUNTDOWN_PERIOD = 3
 
     def __init__(self):
         """
@@ -42,21 +43,22 @@ class AudioPlayer(QMediaPlayer):
         self.audio_output = QAudioOutput()  # apparently needed
         self.setAudioOutput(self.audio_output)
 
-        # To 'extrapolate' current position for a smoother moving progress bar:
+        # To extrapolate current position for a smoother moving progress bar:
         self.elapsedtimer = QElapsedTimer()
         self.elapsedtimer.start()
         self.last_position = 0
         self.time_of_last_position = 0
         self.positionChanged.connect(self.on_position_changed)
 
-        self.update_position = False  # only set to True once position has been updated for the first time
+        self.position_has_been_updated = False  # some things cannot happen until the first update
 
-        self.actual_delay = self.DELAY_MS
-        self.delay_countdown = QTimer(self)
-        self.delay_countdown.setTimerType(Qt.TimerType.PreciseTimer)
-        self.delay_countdown.setInterval(self.DELAY_REFRESH_PERIOD_MS)
-        self.delay_countdown.timeout.connect(self.monitor_delay)
-        self.delay_countdown.start()
+        # Also store a 'ghost' of the playback position, with some delay
+        self.actual_ghost_delay = self.GHOST_DELAY_MS
+        self.ghost_countdown = QTimer(self)
+        self.ghost_countdown.setTimerType(Qt.TimerType.PreciseTimer)
+        self.ghost_countdown.setInterval(self.GHOST_COUNTDOWN_PERIOD)
+        self.ghost_countdown.timeout.connect(self.update_actual_ghost_delay)
+        self.ghost_countdown.start()
 
     def load_file(self, path: str, autoplay=True) -> None:
         """
@@ -66,19 +68,19 @@ class AudioPlayer(QMediaPlayer):
         if autoplay:
             QTimer.singleShot(150, self.play)
             self.last_position = None
-            self.update_position = False
+            self.position_has_been_updated = False
 
-    def monitor_delay(self):
+    def update_actual_ghost_delay(self):
         if self.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
-            self.actual_delay = max(0, self.actual_delay - self.DELAY_REFRESH_PERIOD_MS)
+            self.actual_ghost_delay = max(0, self.actual_ghost_delay - self.GHOST_COUNTDOWN_PERIOD)
         else:
-            self.actual_delay = self.DELAY_MS
+            self.actual_ghost_delay = self.GHOST_DELAY_MS
 
-    def decrease_delay(self):
-        self.DELAY_MS = max(0, self.DELAY_MS - self.DELAY_DELTA_MS)
+    def decrease_ghost_delay(self):
+        self.GHOST_DELAY_MS = max(0, self.GHOST_DELAY_MS - self.GHOST_DELAY_DELTA_MS)
 
-    def increase_delay(self):
-        self.DELAY_MS = min(self.DELAY_MS + self.DELAY_DELTA_MS, self.duration())
+    def increase_ghost_delay(self):
+        self.GHOST_DELAY_MS = min(self.GHOST_DELAY_MS + self.GHOST_DELAY_DELTA_MS, self.duration())
 
     def toggle_play_pause(self) -> None:
         """
@@ -117,7 +119,7 @@ class AudioPlayer(QMediaPlayer):
         Estimates current position from last position and time_of_last_position.
         (Because at least some audio back-ends update position only once every 50-100ms.)
         """
-        if not self.update_position:
+        if not self.position_has_been_updated:
             return 0
 
         if self.last_position is None:  # e.g., at the start or if position was recently changed by seeking
@@ -130,8 +132,8 @@ class AudioPlayer(QMediaPlayer):
 
         return estimated_position
 
-    def get_delay(self):
-        return self.actual_delay
+    def get_delayed_ghost_position(self):
+        return self.actual_ghost_delay
 
     def on_position_changed(self, ms: float) -> None:
         """
@@ -139,7 +141,7 @@ class AudioPlayer(QMediaPlayer):
         """
         self.last_position = ms
         self.time_of_last_position = self.elapsedtimer.elapsed()
-        self.update_position = True  # now it's at least somewhat accurate
+        self.position_has_been_updated = True  # now it's at least somewhat accurate
 
 
 class TranscriptionPanel(QGraphicsView):
@@ -149,10 +151,10 @@ class TranscriptionPanel(QGraphicsView):
     TextBubble objects (when focused).
     """
 
-    PX_PER_S = 200  # TODO Make zoomable?
+    PX_PER_S = 180  # TODO Make zoomable?
     PADDING = 30  # TODO Not quite what I need...
 
-    def __init__(self, position_getter, delay_getter, position_setter):
+    def __init__(self, audioplayer):
         """
         Sets a new TextBubbleScene as its viewed scene; sets its width to a specified
         proportion of the view.
@@ -162,8 +164,9 @@ class TranscriptionPanel(QGraphicsView):
         self.setViewportMargins(self.PADDING, 10, self.PADDING, 10)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        self.audioplayer = audioplayer
+
         self.spectogram = None  # created upon load_file
-        self.delay_ms = delay_getter()
 
         self.progress_line = QGraphicsLineItem()
         self.progress_line.setPen(QPen(QColor(255, 255, 255, 150), 3))
@@ -178,17 +181,10 @@ class TranscriptionPanel(QGraphicsView):
         self.scene().addItem(self.cursor_line)
 
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_progress_line)
+        self.timer.timeout.connect(self.update_vertical_bars)
         self.timer.start(30)  # update ~33 FPS
 
-        self.position_getter = lambda: self.pos_to_pix(position_getter())
-        self.delay_getter = lambda: self.pos_to_pix(delay_getter())
-        self.position_setter = lambda x: position_setter(self.pix_to_pos(x))
-
         self._programmatic_scroll = False
-        # self.horizontalScrollBar().valueChanged.disconnect()
-        # self.horizontalScrollBar().valueChanged.connect(self.on_scroll)
-        # self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def load_file(self, path, duration):
         width_px = int(duration * (self.PX_PER_S / 1000))
@@ -205,14 +201,14 @@ class TranscriptionPanel(QGraphicsView):
         if self._programmatic_scroll:
             super().centerOn(pos)
         else:
-            self.position_setter(pos)
+            self.audioplayer.setPosition(self.pix_to_ms(pos))
 
     def scrollContentsBy(self, dx, dy):
         if self._programmatic_scroll:
             super().scrollContentsBy(dx, dy)
         else:
-            x = self.position_getter() + -dx
-            self.position_setter(x)
+            x = self.ms_to_pix(self.audioplayer.estimate_current_position()) + -dx
+            self.audioplayer.setPosition(self.pix_to_ms(x))
 
     def wheelEvent(self, event):
         # if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -230,9 +226,10 @@ class TranscriptionPanel(QGraphicsView):
         return [item for item in self.scene().items() if isinstance(item, TextBubble)]
 
     def remove_all_bubbles(self):
-        """
-        Clears all annotation bubbles.
-        """
+        if len(self.textBubbles()) > 5 and QMessageBox.question(self, "Confirm Deletion", f"This will remove all {len(self.textBubbles())} annotations for this audio file. Are you sure?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No:
+            return
+
         for bubble in self.textBubbles():
             bubble.scene().removeItem(bubble)
 
@@ -245,16 +242,16 @@ class TranscriptionPanel(QGraphicsView):
             last_bubble = bubbles.pop(0)
             last_bubble.scene().removeItem(last_bubble)
 
-    def update_progress_line(self):
+    def update_vertical_bars(self):
         if not self.spectogram:
             return
 
-        position = self.position_getter()
+        position = self.ms_to_pix(self.audioplayer.estimate_current_position())
         rect = self.spectogram.boundingRect()
         x = rect.left() + position
         self.progress_line.setLine(x, rect.top(), x, rect.bottom())
 
-        delayed_x = max(0, x - self.delay_getter())
+        delayed_x = max(0, x - self.ms_to_pix(self.audioplayer.get_delayed_ghost_position()))
         self.transcription_line.setLine(delayed_x, rect.top(), delayed_x, rect.bottom())
 
         self._programmatic_scroll = True
@@ -267,17 +264,14 @@ class TranscriptionPanel(QGraphicsView):
         self.cursor_line.setLine(cursor_x, rect.top(), cursor_x, rect.bottom())
 
 
-    def pos_to_pix(self, pos_ms):
+    def ms_to_pix(self, pos_ms):
         pix_per_ms = self.PX_PER_S / 1000
         return int(pos_ms * pix_per_ms)
 
-    def pix_to_pos(self, pix):
+    def pix_to_ms(self, pix):
         pix_per_ms = self.PX_PER_S / 1000
         return int(pix / pix_per_ms)
 
-    def left_edge_to_center(self, x):
-        x_center = x + int(self.viewport().width() / 2)
-        return x_center
 
 class CurrentlyPressedKeysTracker(QObject):
     def __init__(self, parent=None):
@@ -289,7 +283,7 @@ class CurrentlyPressedKeysTracker(QObject):
             self.pressed_keys.add(event.key())
         elif event.type() == QEvent.Type.KeyRelease and not event.isAutoRepeat():
             self.pressed_keys.discard(event.key())
-        return False  # don't block the event
+        return False  # don't filter out, for processing further down
 
 
 class ToneSwiperWindow(QMainWindow):
@@ -310,6 +304,7 @@ class ToneSwiperWindow(QMainWindow):
         self.save_as_json = save_as_json
 
         self.currently_pressed_keys_tracker = CurrentlyPressedKeysTracker()
+        QApplication.instance().installEventFilter(self.currently_pressed_keys_tracker)
 
         self.transcriptions = [[] for _ in self.wavfiles]
         if self.save_as_json and os.path.exists(self.save_as_json):
@@ -336,9 +331,7 @@ class ToneSwiperWindow(QMainWindow):
 
         self.audioplayer = AudioPlayer()  # getposition_interval_ms=AudioViewer.REFRESH_PERIOD
 
-        self.transcription_panel = TranscriptionPanel(self.audioplayer.estimate_current_position,
-                                                      self.audioplayer.get_delay,
-                                                      self.audioplayer.setPosition)
+        self.transcription_panel = TranscriptionPanel(self.audioplayer)
         # AudioViewer(self.audioplayer, self, width_for_plot=0.8)
         layout.addWidget(self.transcription_panel)
 
@@ -409,9 +402,9 @@ class ToneSwiperWindow(QMainWindow):
         elif key in Keys.BACKWARD:
             self.audioplayer.skipbackward()
         elif key in Keys.MOREDELAY:
-            self.audioplayer.increase_delay()
+            self.audioplayer.increase_ghost_delay()
         elif key in Keys.LESSDELAY:
-            self.audioplayer.decrease_delay()
+            self.audioplayer.decrease_ghost_delay()
         elif key in Keys.SLOWER:
             self.audioplayer.setPlaybackRate(max(self.audioplayer.playbackRate() - 0.1, 0.5))
         elif key in Keys.FASTER:
@@ -432,7 +425,7 @@ class ToneSwiperWindow(QMainWindow):
         elif key in Keys.TODI_KEYS:
             self.current_key_sequence.append(key)
             if key not in Keys.DOWNSTEP:
-                self.current_key_sequence_time = self.audioplayer.estimate_current_position() - self.audioplayer.get_delay()
+                self.current_key_sequence_time = self.audioplayer.estimate_current_position() - self.audioplayer.get_delayed_ghost_position()
         else:
             self.current_key_sequence = []
             self.current_key_sequence_time = None
