@@ -17,6 +17,7 @@ from . import spectogram
 
 # TODO: Progress bar not correctly shown first 100-or-so ms.
 # TODO: Update docstrings.
+# TODO: Try make slowdown without pitch change.
 
 class AudioPlayer(QMediaPlayer):
     """
@@ -152,7 +153,7 @@ class TranscriptionPanel(QGraphicsView):
     """
 
     PX_PER_S = 180  # TODO Make zoomable?
-    PADDING = 30  # TODO Not quite what I need...
+    PADDING = 30  # TODO Not quite what I need... some text bubbles fall off the edge.
 
     def __init__(self, audioplayer):
         """
