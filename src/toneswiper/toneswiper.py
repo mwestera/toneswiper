@@ -2,9 +2,8 @@ import sys
 import os
 import logging
 
-from PyQt6.QtCore import Qt, QUrl, QTimer, QElapsedTimer, QObject, QEvent, qInstallMessageHandler, QPointF
+from PyQt6.QtCore import Qt, QTimer, QObject, QEvent, qInstallMessageHandler, QPointF
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem, QMessageBox
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QPen, QColor, QCursor
 
 from .textbubbles import TextBubbleScene, TextBubble
@@ -15,11 +14,15 @@ from .ui_helpers import Keys
 from . import spectogram
 
 
-# TODO: Progress bar not correctly shown first 100-or-so ms.
-# TODO: Update docstrings.
-# TODO: Try make slowdown without pitch change.
+import pyrubberband
+import soundfile
+import sounddevice
+import numpy as np
 
-class AudioPlayer(QMediaPlayer):
+
+# TODO: Update docstrings.
+
+class AudioPlayer(QObject):
     """
     Wraps QMediaPlayer, mainly to facilitate displaying a more smoothly moving progress bar (because at least
     some audio back-ends may update position only once every 50-100ms), by virtue of self.estimate_current_position,
@@ -33,6 +36,10 @@ class AudioPlayer(QMediaPlayer):
     GHOST_DELAY_MS = 600
     GHOST_COUNTDOWN_PERIOD = 3
 
+    PLAYBACK_RATE = 1
+    PLAYBACK_RATE_DELTA = .2
+    CHUNK_SIZE = 2048
+
     def __init__(self):
         """
         Instantiates the audio player, connects it to the audio output, and sets up
@@ -41,20 +48,23 @@ class AudioPlayer(QMediaPlayer):
         If getposition_interval_ms is specified, will sync the queue with calls to estimate_current_position.
         """
         super().__init__()
-        self.audio_output = QAudioOutput()  # apparently needed
-        self.setAudioOutput(self.audio_output)
 
         # To extrapolate current position for a smoother moving progress bar:
-        self.elapsedtimer = QElapsedTimer()
-        self.elapsedtimer.start()
         self.last_position = 0
-        self.time_of_last_position = 0
-        self.positionChanged.connect(self.on_position_changed)
+        self.time_of_last_position = None  # for latency
 
-        self.position_has_been_updated = False  # some things cannot happen until the first update
+        self.audiostream = None
+        self.playback_pos = 0
+        self.sample_rate = None
+        self.n_channels = 1
+        self.audio_data = None
+        self.is_playing = False
+        self.duration = None
+        self.will_end_in_ms = None
 
         # Also store a 'ghost' of the playback position, with some delay
         self.actual_ghost_delay = self.GHOST_DELAY_MS
+        self.decreasing_ghost_delay = False
         self.ghost_countdown = QTimer(self)
         self.ghost_countdown.setTimerType(Qt.TimerType.PreciseTimer)
         self.ghost_countdown.setInterval(self.GHOST_COUNTDOWN_PERIOD)
@@ -65,33 +75,106 @@ class AudioPlayer(QMediaPlayer):
         """
         Loads a file and (by default) starts playing.
         """
-        self.setSource(QUrl.fromLocalFile(path))
+
+        self.is_playing = False
+        self.audio_data, self.sample_rate = soundfile.read(path)
+        self.duration = int((len(self.audio_data) / self.sample_rate) * 1000)
+        self.n_channels = self.audio_data.shape[1] if len(self.audio_data.shape) > 1 else 1
+
+        self.audiostream = sounddevice.OutputStream(
+            samplerate=self.sample_rate,
+            channels=self.n_channels,
+            callback=self.audio_callback,
+            blocksize=self.CHUNK_SIZE,
+        )
+
+        self.setPosition(0)
+
         if autoplay:
-            QTimer.singleShot(150, self.play)
-            self.last_position = None
-            self.position_has_been_updated = False
+            self.toggle_play_pause()
+
+    def audio_callback(self, outdata, frames, time, status):
+        if self.playback_pos >= len(self.audio_data):
+            # self.on_position_changed(self.playback_pos, time.outputBufferDacTime * 1000)
+            outdata.fill(0)
+            return
+
+        chunk = self.audio_data[self.playback_pos:self.playback_pos + frames]
+        if len(chunk) < 2:  # avoid too small chunks?
+            try:
+                chunk = np.vstack([chunk, np.zeros((2, self.n_channels))])
+            except ValueError as e:
+                logging.warning(e)
+                outdata.fill(0)
+                return
+
+        audio_stretched = pyrubberband.time_stretch(chunk, self.sample_rate, self.PLAYBACK_RATE)
+        if audio_stretched.ndim == 1:
+            audio_stretched = audio_stretched[:, np.newaxis]
+
+        n = min(len(audio_stretched), len(outdata))  # why?
+        outdata[:n, :] = audio_stretched[:n, :]
+        if n < len(outdata):
+            outdata[n:, :] = 0
+
+        self.on_position_changed(self.playback_pos, time.outputBufferDacTime * 1000)
+
+        # Bookkeep playback position in original audio
+        previous_playback_pos = self.playback_pos
+        self.playback_pos += int(frames * self.PLAYBACK_RATE)
+
+        # project when the audio will be at the end
+        if self.playback_pos >= len(self.audio_data):
+            self.will_end_in_ms = int(((len(self.audio_data) - previous_playback_pos) / self.sample_rate) * 1000 + (time.outputBufferDacTime - self.audiostream.time) * 1000)
+        else:
+            self.will_end_in_ms = None
 
     def update_actual_ghost_delay(self):
-        if self.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
+        if (self.is_playing or (self.estimate_current_position() == self.duration)) and self.will_end_in_ms is not None:
+            self.will_end_in_ms -= self.GHOST_COUNTDOWN_PERIOD
+        if self.will_end_in_ms is not None and self.will_end_in_ms <= 0:
+            self.decreasing_ghost_delay = True
+            self.setPosition(self.duration)
+            self.decreasing_ghost_delay = True
+            self.will_end_in_ms = None
+        if self.decreasing_ghost_delay:
             self.actual_ghost_delay = max(0, self.actual_ghost_delay - self.GHOST_COUNTDOWN_PERIOD)
-        else:
-            self.actual_ghost_delay = self.GHOST_DELAY_MS
+            if self.actual_ghost_delay == 0:
+                self.decreasing_ghost_delay = False
 
     def decrease_ghost_delay(self):
         self.GHOST_DELAY_MS = max(0, self.GHOST_DELAY_MS - self.GHOST_DELAY_DELTA_MS)
+        if not self.decreasing_ghost_delay:
+            self.actual_ghost_delay = self.GHOST_DELAY_MS
 
     def increase_ghost_delay(self):
-        self.GHOST_DELAY_MS = min(self.GHOST_DELAY_MS + self.GHOST_DELAY_DELTA_MS, self.duration())
+        self.GHOST_DELAY_MS = min(self.GHOST_DELAY_MS + self.GHOST_DELAY_DELTA_MS, self.duration)
+        if not self.decreasing_ghost_delay:
+            self.actual_ghost_delay = self.GHOST_DELAY_MS
 
     def toggle_play_pause(self) -> None:
         """
         For use by play/pause hotkey.
         """
-        if self.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.pause()
+        if self.is_playing:
+            pos = self.estimate_current_position()
+            self.audiostream.stop()  # order matters! first get pos, then stop().
+            self.is_playing = False
+            self.setPosition(pos)
         else:
             self.time_of_last_position = None
-            self.play()
+            if self.estimate_current_position() == self.duration:
+                self.setPosition(0)
+            self.is_playing = True
+            self.actual_ghost_delay = self.GHOST_DELAY_MS
+            self.decreasing_ghost_delay = False
+            self.audiostream.start()
+
+    def stop(self):
+        if self.audiostream:
+            self.is_playing = False
+            self.audiostream.stop()
+            self.setPosition(self.estimate_current_position())
 
     def skipforward(self):
         self.seek_relative(self.SEEK_STEP_MS)
@@ -101,48 +184,58 @@ class AudioPlayer(QMediaPlayer):
 
     def skiphome(self):
         self.setPosition(0)
-        self.last_position = None
 
     def skipend(self):
-        self.setPosition(self.duration())
-        self.last_position = None
+        self.setPosition(self.duration)
 
     def seek_relative(self, delta_ms: int) -> None:
         """
         Skips sound player ahead by delta_ms (or back, if negative), capped between 0 and duration.
         """
-        newpos = min(max(0, self.position() + delta_ms), self.duration())
+        newpos = min(max(0, self.estimate_current_position() + delta_ms), self.duration)
+        self.actual_ghost_delay = self.GHOST_DELAY_MS
+        self.decreasing_ghost_delay = False
         self.setPosition(newpos)
-        self.last_position = None  # in order for estimate_current_position to start afresh
+
+    def setPosition(self, pos_ms):
+        self.playback_pos = int((pos_ms / 1000) * self.sample_rate)
+        if not self.is_playing:
+            self.on_position_changed(self.playback_pos, self.audiostream.time * 1000)
+
+    def speedup(self):
+        self.PLAYBACK_RATE += self.PLAYBACK_RATE_DELTA
+        # self.setPlaybackRate(min(self.playbackRate() + self.PLAYBACK_RATE_DELTA, 1.5))
+
+    def slowdown(self):
+        self.PLAYBACK_RATE -= self.PLAYBACK_RATE_DELTA
+        # self.setPlaybackRate(max(self.playbackRate() - self.PLAYBACK_RATE_DELTA, 0.5))
 
     def estimate_current_position(self) -> int:
         """
         Estimates current position from last position and time_of_last_position.
         (Because at least some audio back-ends update position only once every 50-100ms.)
         """
-        if not self.position_has_been_updated:
-            return 0
-
-        if self.last_position is None:  # e.g., at the start or if position was recently changed by seeking
-            self.on_position_changed(self.position())
-        if self.playbackState() == self.PlaybackState.PlayingState and self.time_of_last_position is not None:
-            delta = self.elapsedtimer.elapsed() - self.time_of_last_position
+        if self.is_playing and self.time_of_last_position is not None:
+            now = self.audiostream.time * 1000
+            delta = now - self.time_of_last_position
         else:
             delta = 0
-        estimated_position = self.last_position + delta
+        estimated_position = self.last_position + delta * self.PLAYBACK_RATE
+        if self.is_playing and estimated_position >= self.duration:
+            self.stop()
+        estimated_position = max(min(estimated_position, self.duration), 0)
 
         return estimated_position
 
-    def get_delayed_ghost_position(self):
-        return self.actual_ghost_delay
+    def get_actual_ghost_delay(self):
+        return self.actual_ghost_delay * self.PLAYBACK_RATE
 
-    def on_position_changed(self, ms: float) -> None:
+    def on_position_changed(self, pos_frame: float, dac_time) -> None:
         """
         Keeping position and timing data for extrapolating, as done in self.best_current_position.
         """
-        self.last_position = ms
-        self.time_of_last_position = self.elapsedtimer.elapsed()
-        self.position_has_been_updated = True  # now it's at least somewhat accurate
+        self.last_position = int((pos_frame / self.sample_rate) * 1000)
+        self.time_of_last_position = dac_time
 
 
 class TranscriptionPanel(QGraphicsView):
@@ -183,7 +276,9 @@ class TranscriptionPanel(QGraphicsView):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_vertical_bars)
-        self.timer.start(30)  # update ~33 FPS
+        self.timer.start(12)
+
+        self.setHorizontalScrollBar(ui_helpers.InterceptingScrollBar(Qt.Orientation.Horizontal, self, self.scrollBarInterceptor))
 
         self._programmatic_scroll = False
 
@@ -207,9 +302,14 @@ class TranscriptionPanel(QGraphicsView):
     def scrollContentsBy(self, dx, dy):
         if self._programmatic_scroll:
             super().scrollContentsBy(dx, dy)
+            self.viewport().update()
         else:
-            x = self.ms_to_pix(self.audioplayer.estimate_current_position()) + -dx
+            x = self.ms_to_pix(self.audioplayer.estimate_current_position()) - dx  # minus because wrt to CONTENT
             self.audioplayer.setPosition(self.pix_to_ms(x))
+
+    def scrollBarInterceptor(self, dx):
+        x = self.ms_to_pix(self.audioplayer.estimate_current_position()) + dx
+        self.audioplayer.setPosition(self.pix_to_ms(x))
 
     def wheelEvent(self, event):
         # if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -252,7 +352,7 @@ class TranscriptionPanel(QGraphicsView):
         x = rect.left() + position
         self.progress_line.setLine(x, rect.top(), x, rect.bottom())
 
-        delayed_x = max(0, x - self.ms_to_pix(self.audioplayer.get_delayed_ghost_position()))
+        delayed_x = max(0, x - self.ms_to_pix(self.audioplayer.get_actual_ghost_delay()))
         self.transcription_line.setLine(delayed_x, rect.top(), delayed_x, rect.bottom())
 
         self._programmatic_scroll = True
@@ -280,7 +380,7 @@ class CurrentlyPressedKeysTracker(QObject):
         self.pressed_keys = set()
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
+        if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat() and not event.key() in ui_helpers.Keys.DOWNSTEP | ui_helpers.Keys.UNCERTAIN:
             self.pressed_keys.add(event.key())
         elif event.type() == QEvent.Type.KeyRelease and not event.isAutoRepeat():
             self.pressed_keys.discard(event.key())
@@ -337,8 +437,8 @@ class ToneSwiperWindow(QMainWindow):
         layout.addWidget(self.transcription_panel)
 
         self.current_file_index = None
-        self.load_sound_by_index(0)
         self.transcription_loaded = False
+        self.load_sound_by_index(0)
 
         # For registering ToDI transcription key sequences
         self.current_key_sequence = []
@@ -356,9 +456,9 @@ class ToneSwiperWindow(QMainWindow):
         if idx == self.current_file_index:
             return
 
-        if self.current_file_index is not None:  # i.e., if it's not first file, first save the current annotations
-            if self.transcription_loaded:
-                self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration(), b.toPlainText()) for b in self.transcription_panel.textBubbles()]
+        if self.current_file_index is not None:  # i.e., if it's not first file being loaded, first save the current annotations
+            if self.transcription_loaded:  # in case of next/prev before it gets fully loaded
+                self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration, b.toPlainText()) for b in self.transcription_panel.textBubbles()]
                 for item in self.transcription_panel.textBubbles():
                     item.scene().removeItem(item)
 
@@ -370,8 +470,7 @@ class ToneSwiperWindow(QMainWindow):
 
         self.audioplayer.stop()
         self.audioplayer.load_file(path)
-        # Audioplayer may take a while to know the duration, which in turn affects the placement of annotations:
-        self.audioplayer.durationChanged.connect(self.duration_known_so_load_transcription)
+        self.duration_known_so_load_transcription(self.audioplayer.duration)
 
     def duration_known_so_load_transcription(self, duration):
         """
@@ -380,9 +479,8 @@ class ToneSwiperWindow(QMainWindow):
         """
         if duration > 0:
             for time, text in self.transcriptions[self.current_file_index]:
-                self.transcription_panel.text_bubble_scene.new_item_relx(time / self.audioplayer.duration(), text)
+                self.transcription_panel.text_bubble_scene.new_item_relx(time / self.audioplayer.duration, text)
             self.transcription_panel.load_file(self.wavfiles[self.current_file_index], duration=duration)
-        self.audioplayer.durationChanged.disconnect()
         self.transcription_loaded = True
 
     def keyPressEvent(self, event):
@@ -407,9 +505,9 @@ class ToneSwiperWindow(QMainWindow):
         elif key in Keys.LESSDELAY:
             self.audioplayer.decrease_ghost_delay()
         elif key in Keys.SLOWER:
-            self.audioplayer.setPlaybackRate(max(self.audioplayer.playbackRate() - 0.1, 0.5))
+            self.audioplayer.slowdown()
         elif key in Keys.FASTER:
-            self.audioplayer.setPlaybackRate(min(self.audioplayer.playbackRate() + 0.1, 2.0))
+            self.audioplayer.speedup()
         elif key in Keys.NEXT or (key == Qt.Key.Key_Right and event.modifiers() & Qt.KeyboardModifier.AltModifier):
             self.next()
         elif key in Keys.PREVIOUS or (key == Qt.Key.Key_Left and event.modifiers() & Qt.KeyboardModifier.AltModifier):
@@ -418,15 +516,18 @@ class ToneSwiperWindow(QMainWindow):
             self.audioplayer.skiphome()
         elif key in Keys.END:
             self.audioplayer.skipend()
-
-        if key == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        elif key == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.transcription_panel.remove_last_added_bubble()
         elif key == Qt.Key.Key_X and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.transcription_panel.remove_all_bubbles()
         elif key in Keys.TODI_KEYS:
             self.current_key_sequence.append(key)
-            if key not in Keys.DOWNSTEP:
-                self.current_key_sequence_time = self.audioplayer.estimate_current_position() - self.audioplayer.get_delayed_ghost_position()
+            if Qt.Key.Key_Control in Keys.DOWNSTEP and key != Qt.Key.Key_Control and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.current_key_sequence.append(Qt.Key.Key_Control)
+            elif Qt.Key.Key_Shift in Keys.UNCERTAIN and key != Qt.Key.Key_Shift and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.current_key_sequence.append(Qt.Key.Key_Shift)
+            if key not in Keys.DOWNSTEP | Keys.UNCERTAIN:
+                self.current_key_sequence_time = self.audioplayer.estimate_current_position() - self.audioplayer.get_actual_ghost_delay()
         else:
             self.current_key_sequence = []
             self.current_key_sequence_time = None
@@ -450,7 +551,7 @@ class ToneSwiperWindow(QMainWindow):
             except ValueError as e:
                 logging.warning(e)
             else:
-                self.transcription_panel.text_bubble_scene.new_item_relx(self.current_key_sequence_time / self.audioplayer.duration(), transcription)
+                self.transcription_panel.text_bubble_scene.new_item_relx(self.current_key_sequence_time / self.audioplayer.duration, transcription)
 
         self.current_key_sequence = []
         self.current_key_sequence_time = None
@@ -472,14 +573,14 @@ class ToneSwiperWindow(QMainWindow):
         Upon closing the window, current transcription bubbles are stored in memory,
         and all transcriptions in memory are then saved either as a textgrid, or as json.
         """
-        self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration(), b.toPlainText()) for b in self.transcription_panel.textBubbles()]
+        self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration, b.toPlainText()) for b in self.transcription_panel.textBubbles()]
 
         self.audioplayer.stop()
 
         if self.save_as_textgrid_tier:
             io.write_to_textgrids(self.transcriptions,
                                   [wavfile.replace('.wav', '.TextGrid') for wavfile in self.wavfiles],
-                                  self.audioplayer.duration(),
+                                  self.audioplayer.duration,
                                   self.save_as_textgrid_tier)
         else:
             io.write_to_json(self.wavfiles, self.transcriptions, to_file=self.save_as_json)

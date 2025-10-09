@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt, QByteArray, QObject, QEvent
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollBar, QStyleOptionSlider, QStyle
 from PyQt6.QtGui import QIcon, QPixmap
 
 import argparse
@@ -100,7 +100,9 @@ key_str_to_todi = {
     'HL>': 'H*L L%',
     'LH>': 'L*H H%',
     'LHL': 'L*HL',  # 'delay'
+    'HLL': 'L*HL',  # for sloppy pressing
     'HLH': 'H*LH',  # only pre-nuclear
+    'LHH': 'H*LH',  # for sloppy pressing
     'H>': 'H%',
     'L>': 'L%',
     '<H': '%H',
@@ -220,4 +222,23 @@ def parse_args():
                                                  'already exists, will also load from and overwrite it.',)
 
     return ap.parse_args()
+
+
+class InterceptingScrollBar(QScrollBar):
+    def __init__(self, orientation, parent=None, interceptor=None):
+        super().__init__(orientation, parent)
+        self.interceptor = interceptor
+        self._custom_step = 500
+
+    def mousePressEvent(self, event):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        control = self.style().hitTestComplexControl(QStyle.ComplexControl.CC_ScrollBar, opt, event.position().toPoint(), self)
+        if control == QStyle.SubControl.SC_ScrollBarAddLine:
+            self.interceptor(+self._custom_step)
+            return
+        elif control == QStyle.SubControl.SC_ScrollBarSubLine:
+            self.interceptor(-self._custom_step)
+            return
+        super().mousePressEvent(event)
 
