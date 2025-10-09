@@ -103,6 +103,10 @@ key_str_to_todi = {
     'HLL': 'L*HL',  # for sloppy pressing
     'HLH': 'H*LH',  # only pre-nuclear
     'LHH': 'H*LH',  # for sloppy pressing
+    'LHL>': 'L*HL L%',
+    'HLL>': 'L*HL L%',
+    'HLH>': 'H*LH H%',
+    'LHH>': 'H*LH H%',
     'H>': 'H%',
     'L>': 'L%',
     '<H': '%H',
