@@ -215,6 +215,7 @@ class AudioPlayer(QObject):
         self.actual_ghost_delay = 0
         self.decreasing_ghost_delay = False
         self.setPosition(self.n_frames)
+        self.pause()
 
     def seek_relative(self, delta_frames: int) -> None:
         """
