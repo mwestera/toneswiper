@@ -159,7 +159,7 @@ class AudioPlayer(QObject):
                     self.will_end_in_frames = None
                     logger.debug(f'Starting ghost catchup: {self.actual_ghost_delay=}')
             if self.decreasing_ghost_delay:
-                self.actual_ghost_delay = int(self.actual_ghost_delay - self.original_ms_to_frame(self.GHOST_COUNTDOWN_PERIOD))
+                self.actual_ghost_delay = int(self.actual_ghost_delay - self.original_ms_to_frame(self.GHOST_COUNTDOWN_PERIOD) * self.PLAYBACK_RATE)
                 if self.actual_ghost_delay <= 0:
                     logger.debug(f'Ghost caught up!')
                     self.decreasing_ghost_delay = False
