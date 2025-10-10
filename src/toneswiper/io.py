@@ -4,11 +4,14 @@ import tgt
 import os
 
 
+logger = logging.getLogger('toneswiper')
+
+
 def load_from_json(path):
     """
     Loads annotations from json.
     """
-    logging.warning(f'Loading from existing file {path}; will be modified.')
+    logger.warning(f'Loading from existing file "{path}"; will be modified.')
     with open(path, 'r') as file:
         from_json = json.loads(file.read())
     return from_json
@@ -39,7 +42,7 @@ def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple
         textgrid_path = wavfile.replace('.wav', '.TextGrid')
         if not os.path.exists(textgrid_path):
             from_textgrids[wavfile] = []
-            logging.warning(f'No textgrid found for {wavfile}')
+            logger.warning(f'No textgrid found for "{wavfile}"')
             continue
         textgrid = tgt.io.read_textgrid(textgrid_path)
         if not textgrid.has_tier(tier):
@@ -49,7 +52,7 @@ def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple
         transcription = [(p.time * 1000, p.text) for p in textgrid.get_tier_by_name(tier).points]
         from_textgrids[wavfile] = transcription
     if will_be_modified:
-        logging.warning(f'Loaded from existing textgrids; existing tier {tier} will be modified.')
+        logger.warning(f'Loaded from existing textgrids; existing tier "{tier}" will be modified.')
     return from_textgrids
 
 

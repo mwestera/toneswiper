@@ -8,6 +8,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 import parselmouth
+import warnings
 
 
 @functools.cache
@@ -59,7 +60,9 @@ def draw_spectrogram(spec, ax, dynamic_range=70):
     vmin = vmax - dynamic_range
 
     X, Y = spec.x_grid(), spec.y_grid()
-    sg_db = 10 * np.log10(spec.values)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sg_db = 10 * np.log10(spec.values)
     ax.pcolormesh(X, Y, sg_db, vmin=sg_db.max() - dynamic_range, cmap='afmhot', alpha=.5)
     ax.axis(ymin=spec.ymin, ymax=spec.ymax)
 
