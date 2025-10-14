@@ -1,10 +1,6 @@
-import sys
-
-from PyQt6.QtCore import Qt, QPointF, QTimer, QEvent, QObject
-from PyQt6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, QGraphicsTextItem
-from PyQt6.QtGui import QContextMenuEvent, QPainter, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
-
-from . import ui_helpers
+from PyQt6.QtCore import Qt, QPointF, QTimer
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsTextItem
+from PyQt6.QtGui import QContextMenuEvent, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
 
 BASELINE_Y = 200
 ROW_HEIGHT = 50
@@ -335,3 +331,6 @@ class TextBubbleScene(QGraphicsScene):
                 current_focus_idx = len(all_textboxes) - 1
 
         all_textboxes[current_focus_idx].setFocus()
+
+    def list_all_text_bubbles(self):
+        return [item for item in self.items() if isinstance(item, TextBubble)]

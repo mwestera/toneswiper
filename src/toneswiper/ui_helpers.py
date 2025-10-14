@@ -302,4 +302,3 @@ class InterceptingScrollBar(QScrollBar):
             self.interceptor(-self._custom_step)
             return
         super().mousePressEvent(event)
-

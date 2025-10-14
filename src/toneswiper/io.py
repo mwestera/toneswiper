@@ -3,7 +3,6 @@ import json
 import tgt
 import os
 
-
 logger = logging.getLogger('toneswiper')
 
 
