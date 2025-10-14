@@ -2,7 +2,10 @@ from PyQt6.QtCore import Qt, QByteArray, QObject, QEvent
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollBar, QStyleOptionSlider, QStyle
 from PyQt6.QtGui import QIcon, QPixmap
 
+import os
+import glob
 import argparse
+
 
 class HelpOverlay(QWidget):
     """
@@ -213,6 +216,17 @@ def custom_message_handler(msg_type, context, message):
     print(message)
 
 
+def expand_globs(files):  # for windows cmd/powershell
+    expanded = []
+    for f in files:
+        matches = glob.glob(f)
+        if matches:
+            expanded.extend(matches)
+        else:
+            expanded.append(f)
+    return expanded
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument('files', nargs='+', type=str, help='One or more .wav files')
@@ -225,7 +239,11 @@ def parse_args():
     group.add_argument('--json', type=str, help='Will save annotations to the specified .json file; if file '
                                                  'already exists, will also load from and overwrite it.',)
 
-    return ap.parse_args()
+    args = ap.parse_args()
+    if os.name == "nt":
+        args.files = expand_globs(args.files)
+
+    return args
 
 
 class InterceptingScrollBar(QScrollBar):
