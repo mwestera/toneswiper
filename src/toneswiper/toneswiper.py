@@ -14,15 +14,15 @@ from .ui_helpers import Keys
 
 from . import spectogram
 
-
-import pyrubberband
 import soundfile
 import sounddevice
 import numpy as np
+import pylibrb
+from collections import defaultdict
 
 logging.basicConfig()
 logger = logging.getLogger('toneswiper')
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 
 # TODO: Update docstrings.
 
@@ -44,6 +44,9 @@ class AudioPlayer(QObject):
     PLAYBACK_RATE_DELTA = .1
     CHUNK_SIZE = 4096  # smaller gives more clicks; bigger is slower and less reactive
 
+    MAX_PLAYBACK_RATE = 1.0
+    MIN_PLAYBACK_RATE = 0.4
+
     def __init__(self):
         """
         Instantiates the audio player, connects it to the audio output, and sets up
@@ -58,7 +61,9 @@ class AudioPlayer(QObject):
         self.time_of_last_position = None  # for latency
 
         self.audiostream = None
-        self.playback_pos = 0
+        self.audio_in = None
+        self.pos_consumed = 0
+        self.pos_played = 0
         self.sample_rate = None
         self.n_channels = 1
         self.audio_data = None
@@ -78,17 +83,28 @@ class AudioPlayer(QObject):
         self.ghost_countdown.timeout.connect(self.update_actual_ghost_delay)
         self.ghost_countdown.start()
 
-    def load_file(self, path: str, autoplay=True) -> None:
+    def load_file(self, path: str) -> None:
         """
         Loads a file and (by default) starts playing.
         """
-
         self.is_playing = False
+        if self.audiostream:
+            self.audiostream.stop()
+            self.audiostream.close()
+
         self.audio_data, self.sample_rate = soundfile.read(path)
         self.n_frames = len(self.audio_data)
         self.sample_rate_ms = self.sample_rate / 1000
         self.duration_ms = int((self.n_frames / self.sample_rate_ms))
         self.n_channels = self.audio_data.shape[1] if len(self.audio_data.shape) > 1 else 1
+
+        self.stretcher = pylibrb.RubberBandStretcher(
+            sample_rate=self.sample_rate,
+            channels=self.n_channels,
+            options=pylibrb.Option.PROCESS_REALTIME | pylibrb.Option.ENGINE_FINER,
+        )
+        self.stretcher.time_ratio = self.PLAYBACK_RATE
+        self.audio_in = pylibrb.create_audio_array(channels_num=self.n_channels, samples_num=self.CHUNK_SIZE)
 
         self.will_end_in_frames = None
         self.decreasing_ghost_delay = False
@@ -103,48 +119,51 @@ class AudioPlayer(QObject):
 
         self.setPosition(0)
 
-        logger.debug(f'Audio loaded: {self.n_frames=} ({self.sample_rate=})')
+        logger.debug(f'Audio loaded: {self.n_frames=} ({self.sample_rate=}; {self.n_channels})')
 
-        if autoplay:
-            self.toggle_play_pause()
-
-    def audio_callback(self, outdata, frames, time, status):
-        if self.playback_pos >= len(self.audio_data):
-            # self.on_position_changed(self.playback_pos, time.outputBufferDacTime * 1000)
+    def audio_callback(self, outdata, n_frames, time, status):
+        if self.pos_played >= len(self.audio_data):
             outdata.fill(0)
             return
 
-        chunk = self.audio_data[self.playback_pos:self.playback_pos + frames]
-        if len(chunk) < 2:  # avoid too small chunks?
-            try:
-                chunk = np.vstack([chunk, np.zeros((2, self.n_channels))])
-            except ValueError as e:
-                logger.warning(e)
-                outdata.fill(0)
-                return
+        self.stretcher.time_ratio = 1/self.PLAYBACK_RATE
 
-        audio_stretched = pyrubberband.time_stretch(chunk, self.sample_rate, self.PLAYBACK_RATE)
+        n_input_frames = n_frames  # TODO This sometimes overflows stretcher's buffer,
+                                   #   but self.stretcher.get_samples_required() is too low, audio breaking...
+
+        chunk = self.audio_data[self.pos_consumed: self.pos_consumed + n_input_frames]
+
+        n_input_frames = len(chunk)
+
+        self.audio_in[:,:len(chunk)] = chunk
+        self.audio_in[:,len(chunk):] = 0
+
+        self.stretcher.process(self.audio_in, final=False)
+        audio_stretched = self.stretcher.retrieve(n_frames).transpose()
+
+        logger.debug(f'{self.stretcher.get_samples_required()=}, {self.audio_in.shape=}, {audio_stretched.shape=}')
+
         if audio_stretched.ndim == 1:
             audio_stretched = audio_stretched[:, np.newaxis]
 
-        n = min(len(audio_stretched), len(outdata))  # why?
-        outdata[:n, :] = audio_stretched[:n, :]
-        if n < len(outdata):
-            outdata[n:, :] = 0
+        n_output_frames = min(len(audio_stretched), len(outdata))
+        outdata[:n_output_frames, :] = audio_stretched[:n_output_frames, :]
+        if n_output_frames < len(outdata):
+            outdata[n_output_frames:, :] = 0
 
-        self.on_position_changed(self.playback_pos, time.outputBufferDacTime * 1000)
+        previous_pos_played = self.pos_played
 
-        # Bookkeep playback position in original audio
-        previous_playback_pos = self.playback_pos
-        self.playback_pos += int(frames * self.PLAYBACK_RATE)
+        self.on_position_changed(previous_pos_played, time.outputBufferDacTime * 1000)
 
-        latency_ms = time.outputBufferDacTime * 1000 - self.audiostream.time * 1000
+        self.pos_consumed += n_input_frames
+        self.pos_played += n_output_frames * (self.PLAYBACK_RATE if self.PLAYBACK_RATE < 1.0 else 1.0)  # n_output_frames only goes BELOW, never ABOVE chunk size
 
-        logger.debug(f'Playback: {self.playback_pos=} ({latency_ms=})')
+        latency_ms = (time.outputBufferDacTime * 1000 - self.audiostream.time * 1000)
 
-        # project when the audio will be at the end
-        if self.playback_pos >= self.n_frames and not previous_playback_pos >= self.n_frames:
-            self.will_end_in_frames = self.n_frames - previous_playback_pos + self.original_ms_to_frame(latency_ms) * self.PLAYBACK_RATE
+        logger.debug(f'Playback: {self.pos_consumed=:.0f}, {self.pos_played=:.0f} ({latency_ms=}; total {self.n_frames=})')
+
+        if self.pos_played >= self.n_frames and not previous_pos_played >= self.n_frames:
+            self.will_end_in_frames = int(self.n_frames - previous_pos_played + self.original_ms_to_frame(latency_ms) * self.PLAYBACK_RATE)
             logger.debug(f'Projecting audio end: {self.will_end_in_frames=}')
 
     def update_actual_ghost_delay(self):
@@ -183,7 +202,7 @@ class AudioPlayer(QObject):
             self.pause()
         else:
             self.time_of_last_position = None
-            if self.playback_pos == self.n_frames:
+            if self.pos_consumed == self.n_frames:
                 if self.actual_ghost_delay <= 0:
                     self.setPosition(0)
                     self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
@@ -235,14 +254,31 @@ class AudioPlayer(QObject):
 
     def setPosition(self, frame):
         logger.debug(f'setPosition {frame}')
-        self.playback_pos = int(min(max(0, frame), self.n_frames))
-        self.on_position_changed(self.playback_pos, self.audiostream.time * 1000)
+        self.pos_consumed = self.pos_played = int(min(max(0, frame), self.n_frames))
+        self.stretcher.reset()
+        self.on_position_changed(self.pos_consumed, self.audiostream.time * 1000)
 
     def speedup(self):
-        self.PLAYBACK_RATE = min(1.6, self.PLAYBACK_RATE + self.PLAYBACK_RATE_DELTA)
+        if self.PLAYBACK_RATE >= self.MAX_PLAYBACK_RATE:
+            return
+        was_playing = self.is_playing
+        self.pos_consumed = self.estimate_current_position()
+        self.pause()
+        self.PLAYBACK_RATE = min(self.MAX_PLAYBACK_RATE, self.PLAYBACK_RATE + self.PLAYBACK_RATE_DELTA)
+        self.stretcher.reset()
+        if was_playing:
+            self.toggle_play_pause()
 
     def slowdown(self):
-        self.PLAYBACK_RATE = max(.4, self.PLAYBACK_RATE - self.PLAYBACK_RATE_DELTA)
+        if self.PLAYBACK_RATE <= self.MIN_PLAYBACK_RATE:
+            return
+        was_playing = self.is_playing
+        self.pos_consumed = self.estimate_current_position()
+        self.pause()
+        self.PLAYBACK_RATE = max(self.MIN_PLAYBACK_RATE, self.PLAYBACK_RATE - self.PLAYBACK_RATE_DELTA)
+        self.stretcher.reset()
+        if was_playing:
+            self.toggle_play_pause()
 
     def estimate_current_position(self) -> int:
         """
@@ -254,7 +290,7 @@ class AudioPlayer(QObject):
         else:
             delta = 0
         estimated_position = self.last_position + self.original_ms_to_frame(delta) * self.PLAYBACK_RATE
-        estimated_position = max(min(estimated_position, self.n_frames), 0)
+        estimated_position = int(max(min(estimated_position, self.n_frames), 0))
         return estimated_position
 
     def original_ms_to_frame(self, ms):
@@ -316,6 +352,7 @@ class TranscriptionPanel(QGraphicsView):
         self._programmatic_scroll = False
 
     def load_file(self, path, duration):
+        self.audioplayer.spectogram_is_ready = False
         width_px = int(duration * (self.PX_PER_S / 1000))
         self.scene().setSceneRect(0, 0, width_px, 400)
         if self.spectogram is not None:
@@ -326,6 +363,10 @@ class TranscriptionPanel(QGraphicsView):
         self.progress_line.setZValue(1)
         self.transcription_line.setZValue(1)
         self.cursor_line.setZValue(2)
+
+        # TODO: The following better handled through a signal? And what if audio not yet ready?
+        if not self.audioplayer.is_playing and self.audioplayer.audiostream is not None:
+            self.audioplayer.toggle_play_pause()
 
     def centerOn(self, pos):
         if self._programmatic_scroll:
@@ -439,6 +480,8 @@ class ToneSwiperWindow(QMainWindow):
         self.save_as_textgrid_tier = save_as_textgrids
         self.save_as_json = save_as_json
 
+        self.stored_durations = defaultdict(int)
+
         self.currently_pressed_keys_tracker = CurrentlyPressedKeysTracker()
         QApplication.instance().installEventFilter(self.currently_pressed_keys_tracker)
 
@@ -493,6 +536,7 @@ class ToneSwiperWindow(QMainWindow):
         self.current_key_sequence = []
         self.current_key_sequence_time = None
 
+
     def load_sound_by_index(self, idx: int) -> None:
         """
         For an index to a sound file, this function stores current annotations in memory, loads and plays
@@ -521,6 +565,7 @@ class ToneSwiperWindow(QMainWindow):
         self.audioplayer.pause()
         self.audioplayer.load_file(path)
         self.duration_known_so_load_transcription(self.audioplayer.duration_ms)
+        self.stored_durations[path] = self.audioplayer.duration_ms
 
     def duration_known_so_load_transcription(self, duration):
         """
@@ -633,8 +678,8 @@ class ToneSwiperWindow(QMainWindow):
 
         if self.save_as_textgrid_tier:
             io.write_to_textgrids(self.transcriptions,
-                                  [wavfile.replace('.wav', '.TextGrid') for wavfile in self.wavfiles],
-                                  self.audioplayer.duration_ms,
+                                  self.wavfiles,
+                                  self.stored_durations,
                                   self.save_as_textgrid_tier)
         else:
             io.write_to_json(self.wavfiles, self.transcriptions, to_file=self.save_as_json)
