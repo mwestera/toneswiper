@@ -42,7 +42,7 @@ def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple
         textgrid_path = wavfile.replace('.wav', '.TextGrid')
         if not os.path.exists(textgrid_path):
             from_textgrids[wavfile] = []
-            logger.warning(f'No textgrid found for "{wavfile}"')
+            logger.warning(f'No existing textgrid found for "{wavfile}"; will be created.')
             continue
         textgrid = tgt.io.read_textgrid(textgrid_path)
         if not textgrid.has_tier(tier):
@@ -56,16 +56,17 @@ def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple
     return from_textgrids
 
 
-def write_to_textgrids(transcriptions, paths, duration, tier):
-    for textgrid_path, transcription in zip(paths, transcriptions):
+def write_to_textgrids(transcriptions, wav_paths, durations_ms, tier_name):
+    for wavfile_path, transcription in zip(wav_paths, transcriptions):
+        textgrid_path = wavfile_path.replace('.wav', '.TextGrid')
         basename = os.path.splitext(os.path.basename(textgrid_path))[0]
         if os.path.exists(textgrid_path):
             textgrid = tgt.io.read_textgrid(textgrid_path)
-            if textgrid.has_tier(tier):
-                textgrid.delete_tier(tier)
+            if textgrid.has_tier(tier_name):
+                textgrid.delete_tier(tier_name)
         else:
             textgrid = tgt.core.TextGrid(basename)
         points = [tgt.core.Point(time/1000, text) for time, text in transcription]
-        textgrid.add_tier(tgt.core.PointTier(start_time=0, end_time=duration/1000,
-                                             name=tier, objects=points))
+        textgrid.add_tier(tgt.core.PointTier(start_time=0, end_time=durations_ms[wavfile_path]/1000,
+                                             name=tier_name, objects=points))
         tgt.write_to_file(textgrid, textgrid_path, format='long')
