@@ -3,8 +3,7 @@ import os
 import logging
 
 from PyQt6.QtCore import Qt, QTimer, QObject, QEvent, qInstallMessageHandler, QPointF
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem, \
-    QMessageBox, QHBoxLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem, QMessageBox, QHBoxLayout
 from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QPen, QColor, QCursor
 
 from .textbubbles import TextBubbleScene, TextBubble
