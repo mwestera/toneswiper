@@ -5,11 +5,16 @@ from PyQt6.QtGui import QIcon, QPixmap
 import os
 import glob
 import argparse
+import logging
+import sys
+
+
+logger = logging.getLogger('toneswiper')
 
 
 class HelpOverlay(QWidget):
     """
-    A nonmodal, initially foregrounded window with help about the keyboard controls.
+    Defines an pop-up window with help about the keyboard controls.
     """
 
     text = ("<h2>Welcome to ToneSwiper!</h2>"
@@ -102,10 +107,10 @@ key_str_to_todi = {
     'HL': 'H*L',
     'HL>': 'H*L L%',
     'LH>': 'L*H H%',
-    'LHL': 'L*HL',  # 'delay'
-    'HLL': 'L*HL',  # for sloppy pressing
-    'HLH': 'H*LH',  # only pre-nuclear
-    'LHH': 'H*LH',  # for sloppy pressing
+    'LHL': 'L*HL',  # 'delayed' H*L
+    'HLL': 'L*HL',  # ditto, but sloppily pressed
+    'HLH': 'H*LH',  # fall-rise accent, only pre-nuclear
+    'LHH': 'H*LH',  # ditto, but sloppily pressed
     'LHL>': 'L*HL L%',
     'HLL>': 'L*HL L%',
     'HLH>': 'H*LH H%',
@@ -184,7 +189,7 @@ class TabInterceptor(QObject):
 
     def __init__(self, tab_handler):
         """
-        Tab_handler is any function taking only a boolean 'backward' as argument, to differentiate
+        Argument tab_handler is any function taking only a boolean 'backward' as argument, to differentiate
         between tab and shift-tab.
 
         Specifically, this was meant to be used with TextBubbleScene.handleTabbing.
@@ -216,7 +221,10 @@ def custom_message_handler(msg_type, context, message):
     print(message)
 
 
-def expand_globs(files):  # for windows cmd/powershell
+def expand_globs(files: list[str]) -> list[str]:
+    """
+    To enable bash-like globbing (e.g., *.wav) in Windows cmd/powershell.
+    """
     expanded = []
     for f in files:
         matches = glob.glob(f)
@@ -227,32 +235,63 @@ def expand_globs(files):  # for windows cmd/powershell
     return expanded
 
 
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('files', nargs='+', type=str, help='One or more .wav files')
-    group = ap.add_mutually_exclusive_group()
-    group.add_argument('--textgrid', type=str, nargs='?', const='ToDI', default=None,
-                           help='Will save annotations to .TextGrid files corresponding in name to the original '
-                                '.wav files., to a tier with the specified name (default: "ToDI"). '
-                                'If such .TextGrid files already exist, will load annotations from the given tier '
-                                '(if it exists) and overwrite them.')
-    group.add_argument('--json', type=str, help='Will save annotations to the specified .json file; if file '
-                                                 'already exists, will also load from and overwrite it.',)
+def parse_args() -> argparse.Namespace:
+    """
+    Defines and applies argparser, does some error handling, and returns the resulting args.
+    """
+    argparser = argparse.ArgumentParser(
+        description='ToneSwiper is a keyboard-centered app for efficiently transcribing Dutch intonation '
+                    'according to the ToDI framework.',
+        epilog='For example, navigate to a folder with .wav files, and run: '
+               'toneswiper *.wav --textgrid. Happy annotating!')
+    argparser.add_argument('file', nargs='+', type=str, metavar='<.wav file>', help='One or more .wav files')
+    group = argparser.add_mutually_exclusive_group()
+    group.add_argument('-t', '--textgrid', type=str, nargs='?', const='ToDI', metavar='tier name', default=None,
+                       help='Save annotations to .TextGrid files corresponding in name to the original '
+                            '.wav files., to a tier with the specified name (default: "ToDI"). '
+                            'If such .TextGrid files already exist, will load annotations from the given tier '
+                            '(if it exists) and overwrite them.')
+    group.add_argument('-j', '--json', type=str, metavar='<JSON file>',
+                       help='Save annotations to the specified JSON file; if file '
+                            'already exists, will also load from and overwrite it.')
+    argparser.add_argument('-v', '--verbose', action='store_true',
+                           help='To display a rather unsystematic assortment of logging messages for debugging.')
 
-    args = ap.parse_args()
+    args = argparser.parse_args()
     if os.name == "nt":
-        args.files = expand_globs(args.files)
+        args.file = expand_globs(args.file)
+    if any(not file.endswith('.wav') for file in args.file):
+        argparser.print_usage(sys.stderr)
+        logger.error('error: only .wav files are currently supported.')
+        exit(1)
+    for file in args.file:
+        if not os.path.exists(file):
+            logger.error(f'error: {file} not found.')
+            exit(1)
 
     return args
 
 
 class InterceptingScrollBar(QScrollBar):
+    """
+    Intercepts mousepresses on the scrollbar side buttons and forwards the delta to a custom function provided
+    at construction. In this case, this is used to have the scrollbar control the audioplayer directly,
+    which in turn controls the actual view scroll.
+    """
+
     def __init__(self, orientation, parent=None, interceptor=None):
+        """
+        The interceptor is any function that takes the scroll delta (integer) as argument.
+        """
         super().__init__(orientation, parent)
         self.interceptor = interceptor
         self._custom_step = 500
 
     def mousePressEvent(self, event):
+        """
+        Overrides QScrollBar's own mousePressEvent to call self.interceptor instead.
+        Other events are passed on.
+        """
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
         control = self.style().hitTestComplexControl(QStyle.ComplexControl.CC_ScrollBar, opt, event.position().toPoint(), self)

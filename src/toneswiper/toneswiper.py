@@ -20,11 +20,10 @@ import numpy as np
 import pylibrb
 from collections import defaultdict
 
-logging.basicConfig()
 logger = logging.getLogger('toneswiper')
-logger.setLevel(logging.INFO)
 
 # TODO: Update docstrings.
+
 
 class AudioPlayer(QObject):
     """
@@ -692,8 +691,12 @@ def main():
     Starts the PyQt6 app and main window, and calls upon various ui_helpers for intercepting tab/shift+tab,
     mouse movements, mute some log messages, and sets up F1 for help window.
     """
+    logging.basicConfig(format='%(name)s: %(message)s', level=logging.INFO)
 
     args = ui_helpers.parse_args()
+
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
 
     app = QApplication(sys.argv)
     app.setStyle('fusion')
@@ -701,7 +704,7 @@ def main():
 
     qInstallMessageHandler(ui_helpers.custom_message_handler)
 
-    window = ToneSwiperWindow(args.files, save_as_textgrids=args.textgrid, save_as_json=args.json)
+    window = ToneSwiperWindow(args.file, save_as_textgrids=args.textgrid, save_as_json=args.json)
     app.setWindowIcon(icon)
     window.setWindowIcon(icon)
 
