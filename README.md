@@ -1,6 +1,6 @@
 # ToneSwiper
 
-![](https://raw.githubusercontent.com/mwestera/toneswiper/543942f6f0b32d6085c245d8ddb06dc845d8e2d4/toneswiper.png)
+![](https://github.com/mwestera/toneswiper/blob/5e00a38caeef36d51cfa2281b241018800eaee52/toneswiper.png?raw=true)
 
 ## Transcription of Dutch Intonation (ToDI)
 
