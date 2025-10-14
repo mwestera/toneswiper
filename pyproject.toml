@@ -1,6 +1,6 @@
 [project]
 name = "toneswiper"
-version = "0.2.2"
+version = "0.3.0"
 description = "A tool for manually annotating audio with ToDI-style prosody."
 readme = "README.md"
 classifiers = [
@@ -14,7 +14,7 @@ authors = [
     {name = "mwestera", email = "m.westera@hum.leidenuniv.nl" }
 ]
 requires-python = ">=3.10"
-dependencies = ["pyqt6", "tgt", "praat-parselmouth", "numpy", "matplotlib", "soundfile", "sounddevice", "pyrubberband"]
+dependencies = ["pyqt6", "tgt", "praat-parselmouth", "numpy", "matplotlib", "soundfile", "sounddevice", "pylibrb"]
 license-files = ["LICENSE"]
 
 [project.scripts]
