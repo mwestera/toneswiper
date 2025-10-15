@@ -1,12 +1,12 @@
 from PyQt6.QtCore import Qt, QPointF, QTimer
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsTextItem
 from PyQt6.QtGui import QContextMenuEvent, QFont, QKeyEvent, QTextCursor, QColor, QBrush, QPen, QPolygonF
+from .ui_helpers import measure
 
 BASELINE_Y = 200
 ROW_HEIGHT = 50
 ARROW_WIDTH = 10
 ARROW_HEIGHT = 3
-
 
 class TextBubble(QGraphicsTextItem):
     """
@@ -97,11 +97,13 @@ class TextBubble(QGraphicsTextItem):
             if event.key() == Qt.Key.Key_Left:
                 self.moveBy(-0.01 * self.scene().sceneRect().width(), 0)
                 self.updateRelativeX()
+                self.register_shift_left_right()
                 event.accept()
                 return
             elif event.key() == Qt.Key.Key_Right:
                 self.moveBy(0.01 * self.scene().sceneRect().width(), 0)
                 self.updateRelativeX()
+                self.register_shift_left_right()
                 event.accept()
                 return
 
@@ -113,6 +115,11 @@ class TextBubble(QGraphicsTextItem):
         super().keyPressEvent(event)
         self.moveToRelativeX(do_snap=False)  # Needed here because editing text changes where the center is.
 
+    @measure
+    def register_shift_left_right(self):  # for logging only
+        pass
+
+    @measure
     def contextMenuEvent(self, event: QContextMenuEvent):
         """
         Right click removes a TextBubble.
@@ -120,6 +127,7 @@ class TextBubble(QGraphicsTextItem):
         if self.scene():
             self.scene().removeItem(self)
 
+    @measure
     def mouseMoveEvent(self, event):
         """
         LeftButton moves a TextBubble, updating first absolute position then relative_x.
@@ -132,6 +140,7 @@ class TextBubble(QGraphicsTextItem):
         else:
             super().mouseMoveEvent(event)
 
+    @measure
     def focusOutEvent(self, event):
         """
         Focus out can be the result of many actions, some of which require deletion or splitting up
@@ -160,6 +169,7 @@ class TextBubble(QGraphicsTextItem):
         if event is not None:
             super().focusOutEvent(event)
 
+    @measure
     def split_on_spaces(self):
         """
         Splits self on the spaces in the containing text, into several new TextBubble objects,
@@ -214,6 +224,7 @@ class TextBubble(QGraphicsTextItem):
 
             self.setPos(QPointF(self.pos().x(), new_y))
 
+    @measure
     def focusInEvent(self, event):
         """
         Focusing on a TextBubble selects all the containing text, for easy editing.
@@ -232,6 +243,8 @@ class TextBubble(QGraphicsTextItem):
         cursor.select(QTextCursor.SelectionType.Document)
         self.setTextCursor(cursor)
 
+    def __str__(self):
+        return f"TextBubble({self.toPlainText()})"
 
 class TextBubbleScene(QGraphicsScene):
     """
@@ -251,7 +264,7 @@ class TextBubbleScene(QGraphicsScene):
         """
         if event.button() == Qt.MouseButton.LeftButton:
             if not self.items(event.scenePos()):
-                self.new_item(event.scenePos())
+                self.new_item_from_doubleclick(event.scenePos())
                 return
         super().mousePressEvent(event)
 
@@ -266,6 +279,10 @@ class TextBubbleScene(QGraphicsScene):
         item.updateRelativeX()
         self.item_to_focus_next[0] = item
 
+    @measure
+    def new_item_from_doubleclick(self, pos: QPointF):
+        self.new_item(pos)
+
     def new_item_relx(self, rel_x: float, text: str = "") -> None:
         """
         Create a new item at relative x position (e.g., for programmatic insertion).
@@ -275,7 +292,8 @@ class TextBubbleScene(QGraphicsScene):
         item.relative_x = rel_x
         item.moveToRelativeX()
         self.item_to_focus_next[0] = item
-        item.split_on_spaces()
+        if ' ' in item.toPlainText():
+            item.split_on_spaces()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """
@@ -291,6 +309,7 @@ class TextBubbleScene(QGraphicsScene):
         else:
             event.ignore()
 
+    @measure
     def handle_tabbing(self, backward: bool = False) -> None:
         """
         Meant to overwrite default tab/shift-tab behavior for setting focus to TextBubble objects,
@@ -334,3 +353,6 @@ class TextBubbleScene(QGraphicsScene):
 
     def list_all_text_bubbles(self):
         return [item for item in self.items() if isinstance(item, TextBubble)]
+
+    def __str__(self):
+        return "TextBubbleScene"

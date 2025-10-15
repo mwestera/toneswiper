@@ -5,11 +5,83 @@ from PyQt6.QtGui import QIcon, QPixmap
 import os
 import glob
 import argparse
+
 import logging
 import sys
-
+from datetime import datetime
+from pathlib import Path
+import functools
+import json
+import traceback
+import inspect
 
 logger = logging.getLogger('toneswiper')
+measurer = logging.getLogger('measurer')
+
+
+def setup_logging(verbose, measure):
+    """
+    Set up `logger` for stdout and `measurer` for a file.
+    """
+
+    logger = logging.getLogger("toneswiper")
+    logger.setLevel(logging.INFO)
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
+    logger.addHandler(stream_handler)
+    logger.propagate = False
+
+    measurer = logging.getLogger("measurer")
+    measurer.setLevel(logging.CRITICAL + 1)  # silence
+    if measure:
+        measurer.setLevel(logging.INFO)
+    log_dir = Path("measurements")
+    log_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"{timestamp}.log"
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
+    measurer.addHandler(file_handler)
+    measurer.propagate = False
+
+
+def measure(func):
+    @functools.wraps(func)
+    def decorated(*args, **kwargs):
+        result = None
+        try:
+            result = func(*args, **kwargs)
+            return result
+        except Exception as e:
+            result = e
+            raise e
+        finally:
+            funcname = func.__name__
+            params = list(inspect.signature(func).parameters.values())
+            if params and params[0].name == "self":
+                realparams = params[1:]
+                realargs = args[1:]
+                classname = type(args[0]).__name__
+                funcname = f'{classname}.{funcname}'
+            else:
+                realparams = params
+                realargs = args
+            realparam_names = [str(param).split(': ')[0] for param in realparams]
+            arguments_as_dict = {**dict(zip(realparam_names, realargs)), **kwargs}
+
+            measurer.info(
+                json.dumps(
+                    {
+                        'action': funcname,
+                        'arguments': arguments_as_dict,
+                        'result': result,
+                    }, default=str,
+                )
+            )
+
+    return decorated
 
 
 class HelpOverlay(QWidget):
@@ -72,11 +144,18 @@ class HelpOverlay(QWidget):
         label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(label)
 
+    @measure
     def display_panel(self):
         self.show()
         self.activateWindow()
         self.raise_()
 
+    @measure
+    def closeEvent(self, event):
+        super().closeEvent(event)
+
+    def __str__(self):
+        return "HelpOverlay"
 
 class Keys:
     PAUSE = {Qt.Key.Key_Space}
@@ -126,6 +205,7 @@ key_str_to_todi = {
 }
 
 
+@measure
 def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
     """
     Turns a list of PyQt keys first into a standardized 'proto-transcription', which is then via a dictionary
@@ -150,7 +230,7 @@ def key_sequence_to_transcription(key_sequence: list[Qt.Key]):
     try:
         transcription = key_str_to_todi[proto_transcription]
     except KeyError as e:
-        raise ValueError(f'Not a valid key sequence: {proto_transcription}')
+        raise ValueError(f'Not a valid key sequence: {" ".join(Qt.Key(k).name.removeprefix("Key_") for k in key_sequence)}')
 
     if any(k in Keys.DOWNSTEP for k in key_sequence):
         transcription = transcription.replace('H*', '!H*')
@@ -256,6 +336,9 @@ def parse_args() -> argparse.Namespace:
                             'already exists, will also load from and overwrite it.')
     argparser.add_argument('-v', '--verbose', action='store_true',
                            help='To display a rather unsystematic assortment of logging messages for debugging.')
+    argparser.add_argument('-m', '--measure', action='store_true',
+                           help='To measure annotation speed, hotkey usage, corrections, playback speed, scrolling; '
+                                'will be logged to a new, timestamped log file in the current working directory for each run.')
 
     args = argparser.parse_args()
     if os.name == "nt":
@@ -302,3 +385,18 @@ class InterceptingScrollBar(QScrollBar):
             self.interceptor(-self._custom_step)
             return
         super().mousePressEvent(event)
+
+
+def exception_hook(exc_type, exc_value, exc_traceback):
+    """
+    Makes sure QApplication is properly quit (thus saving annotations).
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    print("⚠️ Something went wrong:\n")
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+    print("\nQuitting ToneSwiper. Your annotations have been saved, if you so requested.")
+    QApplication.quit()

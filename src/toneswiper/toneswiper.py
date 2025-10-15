@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+import json
 
 from PyQt6.QtCore import Qt, QTimer, QObject, QEvent, qInstallMessageHandler, QPointF
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QVBoxLayout, QLabel, QGraphicsView, QGraphicsLineItem, QMessageBox, QHBoxLayout
@@ -9,7 +10,7 @@ from PyQt6.QtGui import QShortcut, QKeySequence, QPainter, QKeyEvent, QPen, QCol
 from .textbubbles import TextBubbleScene, TextBubble
 from . import ui_helpers
 from . import io
-from .ui_helpers import Keys
+from .ui_helpers import Keys, measure
 
 from . import spectogram
 
@@ -19,6 +20,9 @@ import pylibrb
 from collections import defaultdict
 
 logger = logging.getLogger('toneswiper')
+measurer = logging.getLogger('measurer')
+
+# TODO: Currently abusing return values for measurer logs... Better with getters?
 
 
 class AudioPlayer(QObject):
@@ -192,6 +196,12 @@ class AudioPlayer(QObject):
         """
         return int(frame / self.sample_rate_ms)
 
+    def frame_to_ms(self, frame):
+        """
+        Converts number of frames to number of milliseconds, taking playback rate into account.
+        """
+        return int(frame / self.sample_rate_ms) / self.PLAYBACK_RATE
+
     def manage_ghost_delay(self):
         """
         The 'ghost' position always has the same delay behind the playback position, unless the playback position reaches
@@ -223,16 +233,19 @@ class AudioPlayer(QObject):
             self.is_playing = False
 
     # Remainder of this class are functions for handling the various hotkeys:
-
+    @measure
     def decrease_ghost_delay(self):
         self.GHOST_DELAY_FRAMES = max(0, self.GHOST_DELAY_FRAMES - self.GHOST_DELAY_DELTA_FRAMES)
         if not self.decreasing_ghost_delay:
             self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
+        return self.frame_to_ms(self.GHOST_DELAY_FRAMES)
 
+    @measure
     def increase_ghost_delay(self):
         self.GHOST_DELAY_FRAMES = min(self.GHOST_DELAY_FRAMES + self.GHOST_DELAY_DELTA_FRAMES, self.n_frames)
         if not self.decreasing_ghost_delay:
             self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
+        return self.frame_to_ms(self.GHOST_DELAY_FRAMES)
 
     def toggle_play_pause(self) -> None:
         if self.is_playing:
@@ -247,35 +260,52 @@ class AudioPlayer(QObject):
             self.is_playing = True
             self.audiostream.start()
 
+    @measure
+    def toggle_play_pause_manual(self):
+        self.toggle_play_pause()
+        return self.frame_to_original_ms(self.estimate_current_position())
+
+    @measure
     def seek_forward(self):
         self.seek_position_relative(self.SEEK_STEP_FRAMES)
+        return self.frame_to_original_ms(self.estimate_current_position())
 
+    @measure
     def seek_backward(self):
         self.seek_position_relative(-self.SEEK_STEP_FRAMES)
+        return self.frame_to_original_ms(self.estimate_current_position())
 
+    @measure
     def seek_home(self):
         self.will_end_in_frames = None
         self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
         self.decreasing_ghost_delay = False
         self.set_position(0)
+        return 0
 
+    @measure
     def seek_end(self):
         self.will_end_in_frames = None
         self.actual_ghost_delay = 0
         self.decreasing_ghost_delay = False
         self.set_position(self.n_frames)
         self.pause()
+        return self.n_frames
 
     def seek_position_relative(self, delta_frames: int) -> None:
+        self.seek_position_absolute(self.estimate_current_position() + delta_frames)
+
+    def seek_position_absolute(self, frame: int) -> None:
         is_playing = self.is_playing
         self.pause()
         self.will_end_in_frames = None
         self.decreasing_ghost_delay = False
         self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
-        self.set_position(self.estimate_current_position() + delta_frames)
+        self.set_position(frame)
         if is_playing:
             self.toggle_play_pause()
 
+    @measure
     def increase_playback_rate(self):
         if self.PLAYBACK_RATE >= self.MAX_PLAYBACK_RATE:
             return
@@ -286,7 +316,9 @@ class AudioPlayer(QObject):
         self.stretcher.reset()
         if was_playing:
             self.toggle_play_pause()
+        return self.PLAYBACK_RATE
 
+    @measure
     def decrease_playback_rate(self):
         if self.PLAYBACK_RATE <= self.MIN_PLAYBACK_RATE:
             return
@@ -297,7 +329,10 @@ class AudioPlayer(QObject):
         self.stretcher.reset()
         if was_playing:
             self.toggle_play_pause()
+        return self.PLAYBACK_RATE
 
+    def __str__(self):
+        return "AudioPlayer"
 
 class TranscriptionPanel(QGraphicsView):
     """
@@ -411,25 +446,42 @@ class TranscriptionPanel(QGraphicsView):
         if self._is_scrolling_from_code:
             super().centerOn(pos)
         else:
-            self.audioplayer.set_position(self.pix_to_frame(pos))
+            self.manualCenterOn(pos)
 
     def scrollContentsBy(self, dx, dy):
         if self._is_scrolling_from_code:
             super().scrollContentsBy(dx, dy)
             self.viewport().update()
         else:
-            x = self.frame_to_pix(self.audioplayer.estimate_current_position()) - dx  # minus because wrt to CONTENT
-            self.audioplayer.set_position(self.pix_to_frame(x))
+            self.manualScrollContentsBy(dx, dy)
+
+    @measure
+    def manualCenterOn(self, pos):
+        self.audioplayer.seek_position_absolute(self.pix_to_frame(pos))
+        return self.audioplayer.estimate_current_position()
+
+    @measure
+    def manualScrollContentsBy(self, dx, dy):
+        x = self.frame_to_pix(self.audioplayer.estimate_current_position()) - dx  # minus because wrt to CONTENT
+        self.audioplayer.seek_position_absolute(self.pix_to_frame(x))
+        return self.audioplayer.estimate_current_position()
 
     def wheelEvent(self, event):
         # if event.modifiers() & Qt.KeyboardModifier.ControlModifier:  # TODO maybe for zoom?
         delta = event.angleDelta().y()
         self.scrollContentsBy(delta, 0)
         event.accept()
+        self.register_wheel_event()
 
+    @measure
+    def register_wheel_event(self):
+        return self.audioplayer.estimate_current_position()
+
+    @measure
     def scroll_bar_interceptor(self, dx):
         x = self.frame_to_pix(self.audioplayer.estimate_current_position()) + dx
         self.audioplayer.set_position(self.pix_to_frame(x))
+        return self.audioplayer.estimate_current_position()
     # End of scroll-overriding functions
 
     def get_annotations(self) -> list[TextBubble]:
@@ -439,6 +491,7 @@ class TranscriptionPanel(QGraphicsView):
         for time, text in annotations:
             self.text_bubble_scene.new_item_relx(time / self.audioplayer.duration_ms, text)
 
+    @measure
     def remove_all_annotations(self):
         if len(self.get_annotations()) > 10 and QMessageBox.question(self, "Confirm Deletion", f"This will remove all {len(self.get_annotations())} annotations for this audio file. Are you sure?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No:
@@ -447,6 +500,7 @@ class TranscriptionPanel(QGraphicsView):
         for bubble in self.get_annotations():
             bubble.scene().removeItem(bubble)
 
+    @measure
     def remove_last_annotation(self):
         bubbles = self.get_annotations()
         if bubbles:
@@ -466,6 +520,13 @@ class TranscriptionPanel(QGraphicsView):
         """
         pix_per_frame = self.PX_PER_S / self.audioplayer.sample_rate
         return int(pix / pix_per_frame)
+
+    @measure
+    def add_transcription(self, time_ms, text):
+        self.text_bubble_scene.new_item_relx(time_ms, text)
+
+    def __str__(self):
+        return "TranscriptionPanel"
 
 
 class CurrentlyPressedKeysTracker(QObject):
@@ -549,11 +610,14 @@ class ToneSwiperWindow(QMainWindow):
         self.transcription_loaded = False
         self.load_sound_by_index(0)
 
-    def load_sound_by_index(self, idx: int) -> None:
+    @measure
+    def load_sound_by_index(self, idx: int) -> str:
         """
         For an index to a sound file, this function stores current annotations in memory, loads and plays
         the requested sound file, and (re)loads the corresponding audioviewer (spectogram) and transcription
         panels (the latter only once the audio's duration is known).
+
+        Returns the sound filename for logging convenience only.
         """
         n_files = len(self.wavfiles)
         idx = idx % n_files
@@ -583,6 +647,8 @@ class ToneSwiperWindow(QMainWindow):
         self.transcription_panel.add_annotations(self.transcriptions[self.current_file_index])
         self.transcription_loaded = True
 
+        return current_wav_path
+
     def keyPressEvent(self, event):
         """
         Handles most keyboard inputs, as defined in the Keys class, for controlling the audioplayer and
@@ -594,7 +660,7 @@ class ToneSwiperWindow(QMainWindow):
             return
 
         if key in Keys.PAUSE:
-            self.audioplayer.toggle_play_pause()
+            self.audioplayer.toggle_play_pause_manual()
             return
         elif key in Keys.FORWARD:
             self.audioplayer.seek_forward()
@@ -655,17 +721,21 @@ class ToneSwiperWindow(QMainWindow):
             except ValueError as e:
                 logger.warning(e)
             else:
-                self.transcription_panel.text_bubble_scene.new_item_relx(self.current_key_sequence_time / self.audioplayer.duration_ms, transcription)
+                transcription_time = self.current_key_sequence_time / self.audioplayer.duration_ms
+                self.transcription_panel.add_transcription(transcription_time, transcription)
 
         self.current_key_sequence = []
         self.current_key_sequence_time = None
 
+
+    @measure
     def next(self):
         """
         Go to next audio file (modulo-ized).
         """
         self.load_sound_by_index((self.current_file_index + 1) % len(self.wavfiles))
 
+    @measure
     def prev(self):
         """
         Go to previous audio file (modulo-ized).
@@ -677,9 +747,15 @@ class ToneSwiperWindow(QMainWindow):
         Upon closing the window, current transcription bubbles are stored in memory,
         and all transcriptions in memory are then saved either as a textgrid, or as json.
         """
-        self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration_ms, b.toPlainText()) for b in self.transcription_panel.get_annotations()]
-
         self.audioplayer.pause()
+        self.save()
+        event.accept()
+
+    @measure
+    def save(self):
+        self.transcriptions[self.current_file_index] = [(b.relative_x * self.audioplayer.duration_ms, b.toPlainText())
+                                                        for b in self.transcription_panel.get_annotations()]
+        for_json = {str(file): transcription for file, transcription in zip(self.wavfiles, self.transcriptions)}
 
         if self.save_as_textgrid_tier:
             io.write_to_textgrids(self.transcriptions,
@@ -687,9 +763,11 @@ class ToneSwiperWindow(QMainWindow):
                                   self.stored_durations,
                                   self.save_as_textgrid_tier)
         else:
-            io.write_to_json(self.wavfiles, self.transcriptions, to_file=self.save_as_json)
+            io.write_to_json(for_json, to_file=self.save_as_json)
+        return for_json
 
-        event.accept()
+    def __str__(self):
+        return "ToneSwiperWindow"
 
 
 def main():
@@ -697,12 +775,11 @@ def main():
     Starts the PyQt6 app and main window, and calls upon various ui_helpers for intercepting tab/shift+tab,
     mouse movements, mute some log messages, and sets up F1 for help window.
     """
-    logging.basicConfig(format='%(name)s: %(message)s', level=logging.INFO)
-
     args = ui_helpers.parse_args()
 
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
+    ui_helpers.setup_logging(verbose=args.verbose, measure=args.measure)
+
+    measurer.info(json.dumps({"action": "main", "args": args.file, "kwargs": {k: v for k, v in args.__dict__.items() if k != "file"}}))
 
     app = QApplication(sys.argv)
     app.setStyle('fusion')
@@ -711,6 +788,9 @@ def main():
     qInstallMessageHandler(ui_helpers.custom_message_handler)
 
     window = ToneSwiperWindow(args.file, save_as_textgrids=args.textgrid, save_as_json=args.json)
+
+    sys.excepthook = ui_helpers.exception_hook
+
     app.setWindowIcon(icon)
     window.setWindowIcon(icon)
 

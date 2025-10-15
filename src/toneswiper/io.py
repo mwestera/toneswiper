@@ -16,17 +16,16 @@ def load_from_json(path):
     return from_json
 
 
-def write_to_json(wavfiles, transcriptions, to_file):
+def write_to_json(data, to_file):
     """
     Write a dictionary mapping wav filenames to transcriptions (lists of pairs).
     If to_file is None, prints to stdout.
     """
-    for_json = {str(file): transcription for file, transcription in zip(wavfiles, transcriptions)}
     if to_file is not None:
         with open(to_file, 'w') as file:
-            file.write(json.dumps(for_json))
+            file.write(json.dumps(data))
     else:
-        print(json.dumps(for_json))
+        print(json.dumps(data))
 
 
 def load_from_textgrids(wav_paths: list[str], tier: str) -> dict[str, list[tuple[float,str]]]:
