@@ -611,13 +611,13 @@ class ToneSwiperWindow(QMainWindow):
         self.load_sound_by_index(0)
 
     @measure
-    def load_sound_by_index(self, idx: int) -> str:
+    def load_sound_by_index(self, idx: int) -> dict:
         """
         For an index to a sound file, this function stores current annotations in memory, loads and plays
         the requested sound file, and (re)loads the corresponding audioviewer (spectogram) and transcription
         panels (the latter only once the audio's duration is known).
 
-        Returns the sound filename for logging convenience only.
+        Returns the sound filename and duration for logging convenience only.
         """
         n_files = len(self.wavfiles)
         idx = idx % n_files
@@ -647,7 +647,7 @@ class ToneSwiperWindow(QMainWindow):
         self.transcription_panel.add_annotations(self.transcriptions[self.current_file_index])
         self.transcription_loaded = True
 
-        return current_wav_path
+        return {"path": current_wav_path, "duration": duration}
 
     def keyPressEvent(self, event):
         """
@@ -779,7 +779,7 @@ def main():
 
     ui_helpers.setup_logging(verbose=args.verbose, measure=args.measure)
 
-    measurer.info(json.dumps({"action": "main", "args": args.file, "kwargs": {k: v for k, v in args.__dict__.items() if k != "file"}}))
+    measurer.info(json.dumps({"action": "main", "arguments": args.__dict__, "result": None}))
 
     app = QApplication(sys.argv)
     app.setStyle('fusion')

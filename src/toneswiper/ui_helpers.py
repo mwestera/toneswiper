@@ -63,7 +63,7 @@ def measure(func):
             if params and params[0].name == "self":
                 realparams = params[1:]
                 realargs = args[1:]
-                classname = type(args[0]).__name__
+                classname = str(args[0])
                 funcname = f'{classname}.{funcname}'
             else:
                 realparams = params

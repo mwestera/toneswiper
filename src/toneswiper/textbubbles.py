@@ -43,6 +43,7 @@ class TextBubble(QGraphicsTextItem):
         self.margin = 4
         self.padding = 8
         self.setAcceptHoverEvents(True)
+        self.is_being_dragged = False
 
     def updateRelativeX(self):
         """
@@ -127,7 +128,6 @@ class TextBubble(QGraphicsTextItem):
         if self.scene():
             self.scene().removeItem(self)
 
-    @measure
     def mouseMoveEvent(self, event):
         """
         LeftButton moves a TextBubble, updating first absolute position then relative_x.
@@ -137,8 +137,18 @@ class TextBubble(QGraphicsTextItem):
             self.setPos(QPointF(pos.x() - self.boundingRect().width()/2, pos.y()))
             self.focusInEvent(None)
             self.updateRelativeX()
+            self.is_being_dragged = True
         else:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.is_being_dragged:
+            self.is_being_dragged = False
+            self.register_mouse_move()
+
+    @measure
+    def register_mouse_move(self):
+        return self.relative_x
 
     @measure
     def focusOutEvent(self, event):
@@ -224,16 +234,17 @@ class TextBubble(QGraphicsTextItem):
 
             self.setPos(QPointF(self.pos().x(), new_y))
 
-    @measure
     def focusInEvent(self, event):
         """
         Focusing on a TextBubble selects all the containing text, for easy editing.
         """
         if event is not None:
             super().focusInEvent(event)
-        QTimer.singleShot(0, self._select_all)  # otherwise it gets deselected again, timing issue?
+        if not self.is_being_dragged:
+            QTimer.singleShot(0, self._focus_in_event)  # otherwise it gets deselected again, timing issue?
 
-    def _select_all(self):
+    @measure
+    def _focus_in_event(self):
         """
         Helper function because of above timing issue, selects all text in the TextBubble.
         """
@@ -244,7 +255,7 @@ class TextBubble(QGraphicsTextItem):
         self.setTextCursor(cursor)
 
     def __str__(self):
-        return f"TextBubble({self.toPlainText()})"
+        return f"TextBubble({self.toPlainText()}, {self.relative_x}, {id(self)})"
 
 class TextBubbleScene(QGraphicsScene):
     """
