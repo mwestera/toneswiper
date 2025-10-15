@@ -50,6 +50,8 @@ You can also customize the tier to which the annotations are saved:
 toneswiper *.wav --textgrid todi2
 ```
 
+To measure annotation speed, hotkey usage etc., include `--measure` option. This will create a `measurements` folder containing a time-stamped `.log` file. 
+
 For more info, do:
 
 ```bash
