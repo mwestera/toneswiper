@@ -34,6 +34,7 @@ class AudioPlayer(QObject):
 
     # UI things
     SEEK_STEP_FRAMES = 24000
+    SEEK_STEP_DELTA = 1000
 
     GHOST_DELAY_FRAMES = 8000
     GHOST_DELAY_DELTA_FRAMES = 2000
@@ -258,12 +259,22 @@ class AudioPlayer(QObject):
                     self.actual_ghost_delay = self.GHOST_DELAY_FRAMES
                     self.decreasing_ghost_delay = False
             self.is_playing = True
-            self.audiostream.start()
+            self.audiostream.start()  # TODO: can raise sounddevice.PortAudioError on windows?
 
     @measure
     def toggle_play_pause_manual(self):
         self.toggle_play_pause()
         return self.frame_to_original_ms(self.estimate_current_position())
+
+    @measure
+    def increase_seek_step(self):
+        self.SEEK_STEP_FRAMES = min(16000 * 10, self.SEEK_STEP_FRAMES + self.SEEK_STEP_DELTA)
+        return self.SEEK_STEP_FRAMES
+
+    @measure
+    def decrease_seek_step(self):
+        self.SEEK_STEP_FRAMES = max(4000, self.SEEK_STEP_FRAMES - self.SEEK_STEP_DELTA)
+        return self.SEEK_STEP_FRAMES
 
     @measure
     def seek_forward(self):
@@ -507,6 +518,11 @@ class TranscriptionPanel(QGraphicsView):
             last_bubble = bubbles.pop(0)
             last_bubble.scene().removeItem(last_bubble)
 
+    def get_last_annotated_frame(self):
+        if bubbles := self.get_annotations():
+            return self.pix_to_frame(bubbles[0].pos().x())
+        return None
+
     def frame_to_pix(self, pos):
         """
         Converts audio frame to pixel position in the scene.
@@ -541,6 +557,8 @@ class CurrentlyPressedKeysTracker(QObject):
             self.pressed_keys.discard(event.key())
         return False  # don't filter out, for processing further down
 
+    def reset(self):
+        self.pressed_keys = set()
 
 class ToneSwiperWindow(QMainWindow):
     """
@@ -619,6 +637,9 @@ class ToneSwiperWindow(QMainWindow):
 
         Returns the sound filename and duration for logging convenience only.
         """
+
+        self.currently_pressed_keys_tracker.reset()
+
         n_files = len(self.wavfiles)
         idx = idx % n_files
 
@@ -647,7 +668,7 @@ class ToneSwiperWindow(QMainWindow):
         self.transcription_panel.add_annotations(self.transcriptions[self.current_file_index])
         self.transcription_loaded = True
 
-        return {"path": current_wav_path, "duration": duration}
+        return {"path": current_wav_path, "duration": duration, "framerate": self.audioplayer.sample_rate}
 
     def keyPressEvent(self, event):
         """
@@ -660,16 +681,25 @@ class ToneSwiperWindow(QMainWindow):
             return
 
         if key in Keys.PAUSE:
+            self.currently_pressed_keys_tracker.reset()
             self.audioplayer.toggle_play_pause_manual()
             return
         elif key in Keys.FORWARD:
+            self.currently_pressed_keys_tracker.reset()
             self.audioplayer.seek_forward()
         elif key in Keys.BACKWARD:
+            self.currently_pressed_keys_tracker.reset()
             self.audioplayer.seek_backward()
         elif key in Keys.MOREDELAY:
-            self.audioplayer.increase_ghost_delay()
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.audioplayer.increase_seek_step()
+            else:
+                self.audioplayer.increase_ghost_delay()
         elif key in Keys.LESSDELAY:
-            self.audioplayer.decrease_ghost_delay()
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.audioplayer.decrease_seek_step()
+            else:
+                self.audioplayer.decrease_ghost_delay()
         elif key in Keys.SLOWER:
             self.audioplayer.decrease_playback_rate()
             self.playback_rate_label.setText(f'⏱ {self.audioplayer.PLAYBACK_RATE:.1f} ×')
@@ -681,11 +711,21 @@ class ToneSwiperWindow(QMainWindow):
         elif key in Keys.PREVIOUS or (key == Qt.Key.Key_Left and event.modifiers() & Qt.KeyboardModifier.AltModifier):
             self.prev()
         elif key in Keys.HOME:
+            self.currently_pressed_keys_tracker.reset()
             self.audioplayer.seek_home()
         elif key in Keys.END:
-            self.audioplayer.seek_end()
+            self.currently_pressed_keys_tracker.reset()
+            if (last_annotated_frame := self.transcription_panel.get_last_annotated_frame()) and (
+                    self.audioplayer.estimate_current_position() == self.audioplayer.n_frames
+                    or self.audioplayer.estimate_current_position() < last_annotated_frame):
+                # i.e., if has a transcription AND is near start or at the end: skip to last annotation instead
+                self.audioplayer.seek_position_absolute(last_annotated_frame)
+                self.register_go_to_last_annotation(last_annotated_frame)
+            else:
+                self.audioplayer.seek_end()
         elif key == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.transcription_panel.remove_last_annotation()
+            self.currently_pressed_keys_tracker.reset()
         elif key == Qt.Key.Key_X and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.transcription_panel.remove_all_annotations()
         elif key in Keys.TODI_KEYS:
@@ -766,6 +806,10 @@ class ToneSwiperWindow(QMainWindow):
             io.write_to_json(for_json, to_file=self.save_as_json)
         return for_json
 
+    @measure
+    def register_go_to_last_annotation(self, last_annotated_frame):
+        pass
+
     def __str__(self):
         return "ToneSwiperWindow"
 
@@ -794,7 +838,7 @@ def main():
     app.setWindowIcon(icon)
     window.setWindowIcon(icon)
 
-    tab_interceptor = ui_helpers.TabInterceptor(window.transcription_panel.text_bubble_scene.handle_tabbing)
+    tab_interceptor = ui_helpers.TabInterceptor(lambda backward: (window.currently_pressed_keys_tracker.reset() or window.transcription_panel.text_bubble_scene.handle_tabbing(backward)))
     app.installEventFilter(tab_interceptor)
 
     help_box = ui_helpers.HelpOverlay(window)

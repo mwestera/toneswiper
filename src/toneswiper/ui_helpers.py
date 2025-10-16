@@ -118,6 +118,7 @@ class HelpOverlay(QWidget):
              "<li>Space: Play/pause current sound file"
              "<li>Angle brackets (&gt; &lt;); also mousewheel 🖱: Fastforward/backward"
              "<li>Square brackets (], [): decrease/increase delay between audio and annotation timing."
+             "<li>Ctrl+square brackets (], [): increase/decrease seek step size."
              "<li>Plus/minus (+, -): increase/decrease playback speed (and pitch, for now 😼)"
              "</ul>"
 
