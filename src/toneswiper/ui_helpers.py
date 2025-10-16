@@ -113,7 +113,8 @@ class HelpOverlay(QWidget):
              "<li>F1: Display this help"
              "<li>Alt+F4: Quit (<b>will auto-save</b>)"
              "<li>PageUp/PageDown (also Alt+⬅/➡): Next/previous sound file"
-             "<li>Home/End: Go to start/end of current sound file"
+             "<li>Home: Go to start of current sound file."
+             "<li>End: Toggles between position of last annotation and end of current sound file."
              "<li>Space: Play/pause current sound file"
              "<li>Angle brackets (&gt; &lt;); also mousewheel 🖱: Fastforward/backward"
              "<li>Square brackets (], [): decrease/increase delay between audio and annotation timing."
@@ -269,7 +270,7 @@ class TabInterceptor(QObject):
 
     def __init__(self, tab_handler):
         """
-        Argument tab_handler is any function taking only a boolean 'backward' as argument, to differentiate
+        Argument tab_handler is any function taking only a boolean as argument, to differentiate
         between tab and shift-tab.
 
         Specifically, this was meant to be used with TextBubbleScene.handleTabbing.
@@ -285,7 +286,7 @@ class TabInterceptor(QObject):
         if event.type() == QEvent.Type.KeyPress and event.key() in (
             Qt.Key.Key_Tab, Qt.Key.Key_Backtab
         ):
-            self.tab_handler(backward=event.key() == Qt.Key.Key_Backtab)
+            self.tab_handler(event.key() == Qt.Key.Key_Backtab)
             return True
         return False
 
