@@ -96,13 +96,13 @@ class TextBubble(QGraphicsTextItem):
 
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             if event.key() == Qt.Key.Key_Left:
-                self.moveBy(-0.01 * self.scene().sceneRect().width(), 0)
+                self.moveBy(-10, 0)
                 self.updateRelativeX()
                 self.register_shift_left_right()
                 event.accept()
                 return
             elif event.key() == Qt.Key.Key_Right:
-                self.moveBy(0.01 * self.scene().sceneRect().width(), 0)
+                self.moveBy(10, 0)
                 self.updateRelativeX()
                 self.register_shift_left_right()
                 event.accept()
